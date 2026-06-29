@@ -2,9 +2,14 @@ import asyncio
 import csv
 import json
 import re
+import logging
 from datetime import datetime
 
 from playwright.async_api import async_playwright
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("PARSER")
+
 
 SEARCH_QUERIES = [
     "AI разработчик",
@@ -132,7 +137,7 @@ class Parser:
                     }
                 )
             except Exception as exc:
-                print(f"    [!] Ошибка при разборе карточки: {exc}")
+                logger.error(f"    [!] Ошибка при разборе карточки: {exc}")
 
         return results
 
@@ -158,14 +163,14 @@ class Parser:
                     f"&page={page_num}"
                     f"&per_page=20"
                 )
-                print(f"  ↳ стр. {page_num + 1}: {url}")
+                logger.info(f"  ↳ стр. {page_num + 1}: {url}")
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_200)
 
                 # Проверяем пустую выдачу
                 content = await page.content()
                 if "Ничего не найдено" in content:
-                    print("    [!] Нет результатов — стоп")
+                    logger.info("    [!] Нет результатов — стоп")
                     break
 
                 # Ждём карточки (если нет — стоп)
@@ -174,7 +179,7 @@ class Parser:
                         '[data-qa="vacancy-serp__vacancy"]', timeout=8_000
                     )
                 except Exception:
-                    print("    [!] Карточки не появились — стоп")
+                    logger.info("    [!] Карточки не появились — стоп")
                     break
 
                 page_vacancies = await self.parse_page(page)
@@ -184,7 +189,7 @@ class Parser:
                 for v in page_vacancies:
                     v["query"] = query
                 all_results.extend(page_vacancies)
-                print(f"    ✓ найдено: {len(page_vacancies)}")
+                logger.info(f"    ✓ найдено: {len(page_vacancies)}")
 
                 # Следующая страница?
                 next_btn = await page.query_selector('[data-qa="pager-next"]')
@@ -201,7 +206,7 @@ class Parser:
     def save_json(self, data: list[dict]) -> None:
         with open(RESULTS_JSON, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
+        logger.info(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
 
     def save_csv(self, data: list[dict]) -> None:
         if not data:
@@ -220,7 +225,7 @@ class Parser:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(data)
-        print(f"  ✓ {RESULTS_CSV}")
+        logger.info(f"  ✓ {RESULTS_CSV}")
 
     def deduplicate(self, data: list[dict]) -> list[dict]:
         seen, unique = set(), []
@@ -235,13 +240,13 @@ async def main():
     parser = Parser()
 
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print("=" * 60)
-    print(f"  hh.ru Parser  |  {ts}")
-    print(f"  Запросы: {', '.join(SEARCH_QUERIES)}")
-    print(
+    logger.info("=" * 60)
+    logger.info(f"  hh.ru Parser  |  {ts}")
+    logger.info(f"  Запросы: {', '.join(SEARCH_QUERIES)}")
+    logger.info(
         f"  Регион: {'Москва' if AREA == 1 else 'Вся Россия'}  |  Страниц: {MAX_PAGES}"
     )
-    print("=" * 60)
+    logger.info("=" * 60)
 
     all_vacancies: list[dict] = []
 
@@ -249,34 +254,33 @@ async def main():
         browser = await pw.chromium.launch(headless=True)
 
         for query in SEARCH_QUERIES:
-            print(f"\n[→] «{query}»")
+            logger.info(f"[→] «{query}»")
             results = await parser.search(browser, query)
             all_vacancies.extend(results)
-            print(f"    Итого: {len(results)}")
+            logger.info(f"    Итого: {len(results)}")
             await asyncio.sleep(1.5)
 
         await browser.close()
 
     unique = parser.deduplicate(all_vacancies)
-    print(f"\n{'─'*60}")
-    print(f"Уникальных вакансий: {len(unique)}")
-    print(f"{'─'*60}")
+    logger.info(f"\n{'─'*60}")
+    logger.info(f"Уникальных вакансий: {len(unique)}")
+    logger.info(f"{'─'*60}")
 
-    print("\nСохранение:")
+    logger.info("\nСохранение:")
     parser.save_json(unique)
     parser.save_csv(unique)
 
     # Превью
-    print(f"\n{'─'*60}")
-    print("Топ-10 результатов:")
-    print(f"{'─'*60}")
+    logger.info(f"\n{'─'*60}")
+    logger.info("Топ-10 результатов:")
+    logger.info(f"{'─'*60}")
     for v in unique[:10]:
-        print(f"  {v['title']}")
-        print(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
+        logger.info(f"  {v['title']}")
+        logger.info(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
         if v["experience"] != "—":
-            print(f"    {v['experience']}  |  {v['schedule']}")
-        print(f"    {v['link']}")
-        print()
+            logger.info(f"    {v['experience']}  |  {v['schedule']}")
+        logger.info(f"    {v['link']}")
 
 
 if __name__ == "__main__":
