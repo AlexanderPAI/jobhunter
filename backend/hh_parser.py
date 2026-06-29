@@ -1,0 +1,291 @@
+"""
+Парсер вакансий hh.ru с использованием Playwright.
+Ищет AI-разработчиков, AI Product Lead и смежные позиции.
+
+Использование:
+    python hh_parser.py
+
+Настройки — секция CONFIG ниже.
+"""
+
+import asyncio
+import csv
+import json
+import re
+from datetime import datetime
+
+from playwright.async_api import async_playwright
+
+# ═══════════════════════════════════════════════════════════════
+#  CONFIG
+# ═══════════════════════════════════════════════════════════════
+SEARCH_QUERIES = [
+    "AI разработчик",
+    "AI Product Lead",
+    "ML engineer",
+    "LLM разработчик",
+    "AI инженер",
+]
+
+AREA = 1  # 1 = Москва; 0 = вся Россия
+MAX_PAGES = 3  # страниц на каждый запрос (20 вакансий / страница)
+RESULTS_JSON = "hh_vacancies.json"
+RESULTS_CSV = "hh_vacancies.csv"
+# ═══════════════════════════════════════════════════════════════
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _salary_from_card(card) -> str:
+    """
+    Ищет зарплату в карточке: сначала через data-qa-compensation,
+    потом через любой элемент с «₽» в тексте.
+    """
+    # Вариант 1: data-qa содержит "compensation-frequency"
+    # sal_qa = card.query_selector_all('[data-qa*="compensation-frequency"]')
+    # Это теги-метки ("два раза в месяц"), а сама сумма — их родительский контейнер
+    # Поэтому берём весь compensation-блок через класс compensation-labels
+    # Вариант 2: просто ищем текст с «₽»
+    return None  # Playwright — async, обрабатываем ниже
+
+
+async def _get_salary(card) -> str:
+    """Async-вариант: проходит по всем span/div карточки в поисках ₽."""
+    # Сначала ищем явный data-qa
+    sal_els = await card.query_selector_all(
+        '[data-qa*="vacancy-serp__vacancy-compensation"]'
+    )
+    for el in sal_els:
+        t = _clean(await el.inner_text())
+        if t and "₽" in t:  # только элементы с реальной суммой
+            return t
+
+    # Запасной вариант — любой элемент с ₽ и длиной < 80
+    all_els = await card.query_selector_all("span, div")
+    for el in all_els:
+        t = _clean(await el.inner_text())
+        if "₽" in t and len(t) < 80:
+            # Убираем мусор ("Выплаты: два раза в месяц")
+            amount = re.sub(r"(Выплаты.*|Опыт.*|на руки|на счёт)", "", t, flags=re.I)
+            amount = _clean(amount)
+            if amount:
+                return amount
+    return "не указана"
+
+
+async def _get_schedule(card) -> str:
+    """Формат: удалёнка / гибрид / офис."""
+    remote = await card.query_selector('[data-qa="vacancy-label-work-schedule-remote"]')
+    if remote:
+        return _clean(await remote.inner_text())
+    return "—"
+
+
+async def _get_experience(card) -> str:
+    """Требуемый опыт."""
+    exp = await card.query_selector(
+        '[data-qa*="vacancy-serp__vacancy-work-experience"]'
+    )
+    if exp:
+        return _clean(await exp.inner_text())
+    return "—"
+
+
+async def parse_page(page) -> list[dict]:
+    """Парсит все карточки с текущей страницы выдачи."""
+    await page.wait_for_selector('[data-qa="vacancy-serp__vacancy"]', timeout=15_000)
+    cards = await page.query_selector_all('[data-qa="vacancy-serp__vacancy"]')
+    results = []
+
+    for card in cards:
+        try:
+            # Название + ссылка
+            title_el = await card.query_selector('[data-qa="serp-item__title"]')
+            title = _clean(await title_el.inner_text()) if title_el else "—"
+            href = await title_el.get_attribute("href") if title_el else None
+            link = href.split("?")[0] if href else "—"  # чистый URL без трекинга
+
+            # Компания
+            company_el = await card.query_selector(
+                '[data-qa="vacancy-serp__vacancy-employer"]'
+            )
+            company = _clean(await company_el.inner_text()) if company_el else "—"
+
+            # Зарплата
+            salary = await _get_salary(card)
+
+            # Город
+            city_el = await card.query_selector(
+                '[data-qa="vacancy-serp__vacancy-address"]'
+            )
+            city = _clean(await city_el.inner_text()) if city_el else "—"
+
+            # Формат работы и опыт
+            schedule = await _get_schedule(card)
+            experience = await _get_experience(card)
+
+            results.append(
+                {
+                    "title": title,
+                    "company": company,
+                    "salary": salary,
+                    "city": city,
+                    "schedule": schedule,
+                    "experience": experience,
+                    "link": link,
+                }
+            )
+        except Exception as exc:
+            print(f"    [!] Ошибка при разборе карточки: {exc}")
+
+    return results
+
+
+async def search(browser, query: str) -> list[dict]:
+    """Ищет вакансии по одному запросу, обходит MAX_PAGES страниц."""
+    ctx = await browser.new_context(
+        locale="ru-RU",
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+    )
+    page = await ctx.new_page()
+    all_results: list[dict] = []
+
+    try:
+        for page_num in range(MAX_PAGES):
+            url = (
+                f"https://hh.ru/search/vacancy"
+                f"?text={query.replace(' ', '+')}"
+                f"&area={AREA}"
+                f"&page={page_num}"
+                f"&per_page=20"
+            )
+            print(f"  ↳ стр. {page_num + 1}: {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            await page.wait_for_timeout(1_200)
+
+            # Проверяем пустую выдачу
+            content = await page.content()
+            if "Ничего не найдено" in content:
+                print("    [!] Нет результатов — стоп")
+                break
+
+            # Ждём карточки (если нет — стоп)
+            try:
+                await page.wait_for_selector(
+                    '[data-qa="vacancy-serp__vacancy"]', timeout=8_000
+                )
+            except Exception:
+                print("    [!] Карточки не появились — стоп")
+                break
+
+            page_vacancies = await parse_page(page)
+            if not page_vacancies:
+                break
+
+            for v in page_vacancies:
+                v["query"] = query
+            all_results.extend(page_vacancies)
+            print(f"    ✓ найдено: {len(page_vacancies)}")
+
+            # Следующая страница?
+            next_btn = await page.query_selector('[data-qa="pager-next"]')
+            if not next_btn:
+                break
+
+            await page.wait_for_timeout(600)
+
+    finally:
+        await ctx.close()
+
+    return all_results
+
+
+def save_json(data: list[dict]) -> None:
+    with open(RESULTS_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
+
+
+def save_csv(data: list[dict]) -> None:
+    if not data:
+        return
+    fields = [
+        "title",
+        "company",
+        "salary",
+        "city",
+        "schedule",
+        "experience",
+        "link",
+        "query",
+    ]
+    with open(RESULTS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(data)
+    print(f"  ✓ {RESULTS_CSV}")
+
+
+def deduplicate(data: list[dict]) -> list[dict]:
+    seen, unique = set(), []
+    for v in data:
+        if v["link"] not in seen:
+            seen.add(v["link"])
+            unique.append(v)
+    return unique
+
+
+async def main():
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print("=" * 60)
+    print(f"  hh.ru Parser  |  {ts}")
+    print(f"  Запросы: {', '.join(SEARCH_QUERIES)}")
+    print(
+        f"  Регион: {'Москва' if AREA == 1 else 'Вся Россия'}  |  Страниц: {MAX_PAGES}"
+    )
+    print("=" * 60)
+
+    all_vacancies: list[dict] = []
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+
+        for query in SEARCH_QUERIES:
+            print(f"\n[→] «{query}»")
+            results = await search(browser, query)
+            all_vacancies.extend(results)
+            print(f"    Итого: {len(results)}")
+            await asyncio.sleep(1.5)
+
+        await browser.close()
+
+    unique = deduplicate(all_vacancies)
+    print(f"\n{'─'*60}")
+    print(f"Уникальных вакансий: {len(unique)}")
+    print(f"{'─'*60}")
+
+    print("\nСохранение:")
+    save_json(unique)
+    save_csv(unique)
+
+    # Превью
+    print(f"\n{'─'*60}")
+    print("Топ-10 результатов:")
+    print(f"{'─'*60}")
+    for v in unique[:10]:
+        print(f"  {v['title']}")
+        print(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
+        if v["experience"] != "—":
+            print(f"    {v['experience']}  |  {v['schedule']}")
+        print(f"    {v['link']}")
+        print()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
