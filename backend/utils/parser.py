@@ -1,10 +1,16 @@
 import asyncio
 import csv
 import json
+import logging
 import re
-from datetime import datetime
 
 from playwright.async_api import async_playwright
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("PARSER")
+
 
 SEARCH_QUERIES = [
     "AI разработчик",
@@ -15,20 +21,36 @@ SEARCH_QUERIES = [
 ]
 
 AREA = 1  # 1 = Москва; 0 = вся Россия
-MAX_PAGES = 3  # страниц на каждый запрос (20 вакансий / страница)
+MAX_PAGES = 3  # страниц на каждый запрос (50 вакансий / страница)
 RESULTS_JSON = "hh_vacancies.json"
 RESULTS_CSV = "hh_vacancies.csv"
 
 
-class Parser:
+class HHParser:
 
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        search_queries: list[str],
+        area: int,
+        max_pages: int,
+        save_to_json: bool = False,
+        save_to_csv: bool = False,
+    ) -> None:
+        self.search_queries = search_queries
+        self.area = area
+        self.max_pages = max_pages
+        self.results_json_path = RESULTS_JSON
+        self.results_csv_path = RESULTS_CSV
+        self.save_to_json = save_to_json
+        self.save_to_csv = save_to_csv
+        self.results = []
 
-    def _clean(self, text: str) -> str:
+    @staticmethod
+    def _clean(text: str) -> str:
         return re.sub(r"\s+", " ", text or "").strip()
 
-    def _salary_from_card(self, card) -> str:
+    @staticmethod
+    def _salary_from_card(card) -> str:
         """
         Ищет зарплату в карточке: сначала через data-qa-compensation,
         потом через любой элемент с «₽» в тексте.
@@ -89,7 +111,6 @@ class Parser:
             '[data-qa="vacancy-serp__vacancy"]', timeout=15_000
         )
         cards = await page.query_selector_all('[data-qa="vacancy-serp__vacancy"]')
-        results = []
 
         for card in cards:
             try:
@@ -120,7 +141,7 @@ class Parser:
                 schedule = await self._get_schedule(card)
                 experience = await self._get_experience(card)
 
-                results.append(
+                self.results.append(
                     {
                         "title": title,
                         "company": company,
@@ -132,9 +153,9 @@ class Parser:
                     }
                 )
             except Exception as exc:
-                print(f"    [!] Ошибка при разборе карточки: {exc}")
+                logger.error(f"    [!] Ошибка при разборе карточки: {exc}")
 
-        return results
+        return self.results
 
     async def search(self, browser, query: str) -> list[dict]:
         """Ищет вакансии по одному запросу, обходит MAX_PAGES страниц."""
@@ -150,7 +171,7 @@ class Parser:
         all_results: list[dict] = []
 
         try:
-            for page_num in range(MAX_PAGES):
+            for page_num in range(self.max_pages):
                 url = (
                     f"https://hh.ru/search/vacancy"
                     f"?text={query.replace(' ', '+')}"
@@ -158,14 +179,14 @@ class Parser:
                     f"&page={page_num}"
                     f"&per_page=20"
                 )
-                print(f"  ↳ стр. {page_num + 1}: {url}")
+                logger.info(f"  ↳ стр. {page_num + 1}: {url}")
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_200)
 
                 # Проверяем пустую выдачу
                 content = await page.content()
                 if "Ничего не найдено" in content:
-                    print("    [!] Нет результатов — стоп")
+                    logger.info("    [!] Нет результатов — стоп")
                     break
 
                 # Ждём карточки (если нет — стоп)
@@ -174,7 +195,7 @@ class Parser:
                         '[data-qa="vacancy-serp__vacancy"]', timeout=8_000
                     )
                 except Exception:
-                    print("    [!] Карточки не появились — стоп")
+                    logger.info("    [!] Карточки не появились — стоп")
                     break
 
                 page_vacancies = await self.parse_page(page)
@@ -184,7 +205,7 @@ class Parser:
                 for v in page_vacancies:
                     v["query"] = query
                 all_results.extend(page_vacancies)
-                print(f"    ✓ найдено: {len(page_vacancies)}")
+                logger.info(f"    ✓ найдено: {len(page_vacancies)}")
 
                 # Следующая страница?
                 next_btn = await page.query_selector('[data-qa="pager-next"]')
@@ -201,7 +222,7 @@ class Parser:
     def save_json(self, data: list[dict]) -> None:
         with open(RESULTS_JSON, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
+        logger.info(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
 
     def save_csv(self, data: list[dict]) -> None:
         if not data:
@@ -220,7 +241,7 @@ class Parser:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(data)
-        print(f"  ✓ {RESULTS_CSV}")
+        logger.info(f"  ✓ {RESULTS_CSV}")
 
     def deduplicate(self, data: list[dict]) -> list[dict]:
         seen, unique = set(), []
@@ -230,54 +251,60 @@ class Parser:
                 unique.append(v)
         return unique
 
+    async def run_parser(self):
+        logger.info("=" * 60)
+        logger.info("  hh.ru Parser  ")
+        logger.info(f"  Запросы: {', '.join(self.search_queries)}")
+        logger.info(
+            f"  Регион: {'Москва' if AREA == 1 else 'Вся Россия'}  |  Страниц: {self.max_pages}"
+        )
+        logger.info("=" * 60)
 
-async def main():
-    parser = Parser()
+        all_vacancies: list[dict] = []
 
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print("=" * 60)
-    print(f"  hh.ru Parser  |  {ts}")
-    print(f"  Запросы: {', '.join(SEARCH_QUERIES)}")
-    print(
-        f"  Регион: {'Москва' if AREA == 1 else 'Вся Россия'}  |  Страниц: {MAX_PAGES}"
-    )
-    print("=" * 60)
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
 
-    all_vacancies: list[dict] = []
+            for query in self.search_queries:
+                logger.info(f"[→] «{query}»")
+                results = await self.search(browser, query)
+                all_vacancies.extend(results)
+                logger.info(f"    Итого: {len(results)}")
+                await asyncio.sleep(1.5)
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+            await browser.close()
 
-        for query in SEARCH_QUERIES:
-            print(f"\n[→] «{query}»")
-            results = await parser.search(browser, query)
-            all_vacancies.extend(results)
-            print(f"    Итого: {len(results)}")
-            await asyncio.sleep(1.5)
+        unique = self.deduplicate(all_vacancies)
+        logger.info(f"\n{'─' * 60}")
+        logger.info(f"Уникальных вакансий: {len(unique)}")
+        logger.info(f"{'─' * 60}")
 
-        await browser.close()
+        logger.info("\nСохранение:")
+        if self.save_to_json:
+            self.save_json(unique)
+        if self.save_csv:
+            self.save_csv(unique)
 
-    unique = parser.deduplicate(all_vacancies)
-    print(f"\n{'─'*60}")
-    print(f"Уникальных вакансий: {len(unique)}")
-    print(f"{'─'*60}")
-
-    print("\nСохранение:")
-    parser.save_json(unique)
-    parser.save_csv(unique)
-
-    # Превью
-    print(f"\n{'─'*60}")
-    print("Топ-10 результатов:")
-    print(f"{'─'*60}")
-    for v in unique[:10]:
-        print(f"  {v['title']}")
-        print(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
-        if v["experience"] != "—":
-            print(f"    {v['experience']}  |  {v['schedule']}")
-        print(f"    {v['link']}")
-        print()
+        # Превью
+        logger.info(f"\n{'─' * 60}")
+        logger.info("Топ-10 результатов:")
+        logger.info(f"{'─' * 60}")
+        for v in unique[:10]:
+            logger.info(f"  {v['title']}")
+            logger.info(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
+            if v["experience"] != "—":
+                logger.info(f"    {v['experience']}  |  {v['schedule']}")
+            logger.info(f"    {v['link']}")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# async def main():
+#     parser = Parser(
+#         search_queries=SEARCH_QUERIES,
+#         area=AREA,
+#         max_pages=MAX_PAGES,
+#         save_to_csv=True,
+#     )
+#     await parser.run_parser()
+#
+# if __name__ == "__main__":
+#     asyncio.run(main())
