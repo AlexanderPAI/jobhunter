@@ -305,6 +305,30 @@ class HHParser:
 
         return page_results
 
+    # Настройки retry для обхода throttling hh.ru
+    GOTO_TIMEOUT_MS = 60_000  # таймаут одного перехода
+    GOTO_RETRY_COUNT = 3  # попыток на каждую страницу
+    GOTO_RETRY_BASE_DELAY = 5.0  # базовая задержка retry (умножается на номер попытки)
+    PAGE_DELAY_MS = 1_500  # пауза после загрузки страницы
+    BETWEEN_PAGES_DELAY = 2.0  # пауза между страницами одного запроса
+
+    async def _goto_with_retry(self, page, url: str) -> None:
+        """Переходит по URL с повторными попытками при таймауте."""
+        for attempt in range(self.GOTO_RETRY_COUNT):
+            try:
+                await page.goto(
+                    url, wait_until="domcontentloaded", timeout=self.GOTO_TIMEOUT_MS
+                )
+                return
+            except Exception as exc:
+                if attempt == self.GOTO_RETRY_COUNT - 1:
+                    raise
+                delay = self.GOTO_RETRY_BASE_DELAY * (attempt + 1)
+                logger.warning(
+                    f"    [!] Таймаут (попытка {attempt + 1}), жду {delay:.0f}с... ({exc})"
+                )
+                await asyncio.sleep(delay)
+
     async def search(self, browser, query: str) -> list[dict]:
         """Ищет вакансии по одному запросу, обходит max_pages страниц."""
         ctx = await browser.new_context(
@@ -322,8 +346,12 @@ class HHParser:
             for page_num in range(self.max_pages):
                 url = self._build_url(query, page_num)
                 logger.info(f"  ↳ стр. {page_num + 1}: {url}")
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                await page.wait_for_timeout(1_200)
+
+                if page_num > 0:
+                    await asyncio.sleep(self.BETWEEN_PAGES_DELAY)
+
+                await self._goto_with_retry(page, url)
+                await page.wait_for_timeout(self.PAGE_DELAY_MS)
 
                 content = await page.content()
                 if "Ничего не найдено" in content:
@@ -350,8 +378,6 @@ class HHParser:
                 next_btn = await page.query_selector('[data-qa="pager-next"]')
                 if not next_btn:
                     break
-
-                await page.wait_for_timeout(600)
 
         finally:
             await ctx.close()
@@ -542,7 +568,7 @@ class HHParser:
                 results = await self.search(browser, query)
                 all_vacancies.extend(results)
                 logger.info(f"    Итого: {len(results)}")
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(3.0)
 
             await browser.close()
 
@@ -574,32 +600,3 @@ class HHParser:
             logger.info(f"    {vacancy['link']}")
 
         return filtered_vacancies
-
-
-if __name__ == "__main__":
-    filters = SearchFilters(
-        # URL-фильтры
-        salary_from=150_000,
-        only_with_salary=True,
-        schedule=["remote", "flexible"],
-        experience=["between1And3", "between3And6"],
-        employment=["full"],
-        order_by="salary_desc",
-        search_field="name",
-        # Пост-фильтры
-        salary_to=500_000,
-        exclude_companies=["Headhunter", "Авито"],
-        require_keywords=["AI"],
-        exclude_keywords=["стажёр", "intern", "junior"],
-    )
-
-    parser = HHParser(
-        search_queries=["AI разработчик", "ML engineer", "LLM developer"],
-        area=1,
-        max_pages=3,
-        filters=filters,
-        save_to_json=True,
-        save_to_csv=True,
-    )
-
-    asyncio.run(parser.run_parser())
