@@ -35,6 +35,9 @@ class HHParser:
         max_pages: int,
         save_to_json: bool = False,
         save_to_csv: bool = False,
+        results_json_path=RESULTS_JSON,
+        results_csv_path=RESULTS_CSV,
+        csv_override: bool = False,
     ) -> None:
         self.search_queries = search_queries
         self.area = area
@@ -237,11 +240,12 @@ class HHParser:
             "link",
             "query",
         ]
-        with open(RESULTS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+        # self.results_csv_path уже учитывает csv_override
+        with open(self.results_csv_path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(data)
-        logger.info(f"  ✓ {RESULTS_CSV}")
+        logger.info(f"  ✓ {self.results_csv_path}")
 
     def deduplicate(self, data: list[dict]) -> list[dict]:
         seen, unique = set(), []
@@ -295,16 +299,3 @@ class HHParser:
             if v["experience"] != "—":
                 logger.info(f"    {v['experience']}  |  {v['schedule']}")
             logger.info(f"    {v['link']}")
-
-
-# async def main():
-#     parser = Parser(
-#         search_queries=SEARCH_QUERIES,
-#         area=AREA,
-#         max_pages=MAX_PAGES,
-#         save_to_csv=True,
-#     )
-#     await parser.run_parser()
-#
-# if __name__ == "__main__":
-#     asyncio.run(main())
