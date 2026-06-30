@@ -3,7 +3,9 @@ import csv
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright
 
@@ -18,6 +20,132 @@ MAX_PAGES = 3  # страниц на каждый запрос (50 ваканс�
 RESULTS_JSON = "hh_vacancies.json"
 RESULTS_CSV = "hh_vacancies.csv"
 
+# Справочники значений hh.ru
+SCHEDULE_LABELS = {
+    "remote": "Удалённая",
+    "fullDay": "Полный день",
+    "flexible": "Гибкий",
+    "shift": "Сменный",
+    "flyInFlyOut": "Вахта",
+}
+
+EXPERIENCE_LABELS = {
+    "noExperience": "Без опыта",
+    "between1And3": "1–3 года",
+    "between3And6": "3–6 лет",
+    "moreThan6": "Более 6 лет",
+}
+
+EMPLOYMENT_LABELS = {
+    "full": "Полная",
+    "part": "Частичная",
+    "project": "Проектная",
+    "volunteer": "Волонтёрство",
+    "probation": "Стажировка",
+}
+
+ORDER_LABELS = {
+    "relevance": "По соответствию",
+    "salary_desc": "По убыванию ЗП",
+    "salary_asc": "По возрастанию ЗП",
+    "name": "По названию",
+    "publication_time": "По дате публикации",
+}
+
+
+# Фильтры
+@dataclass
+class SearchFilters:
+    """
+    Параметры фильтрации поиска вакансий на hh.ru.
+
+    URL-фильтры  (передаются напрямую в запрос к hh.ru)
+    ────────────────────────────────────────────────────
+    salary_from      : int | None
+        Минимальная ЗП в ₽. hh.ru вернёт вакансии, где указанная ЗП ≥ этого значения.
+        Пример: 150_000
+
+    only_with_salary : bool
+        Показывать только вакансии с указанной зарплатой.
+
+    schedule         : list[str]
+        Формат/график работы (несколько значений — ИЛИ).
+        Допустимые значения:
+            'remote'      — удалённая работа
+            'fullDay'     — полный день (офис)
+            'flexible'    — гибкий график
+            'shift'       — сменный график
+            'flyInFlyOut' — вахта
+
+    experience       : list[str]
+        Требуемый опыт (несколько значений — ИЛИ).
+        Допустимые значения:
+            'noExperience' — без опыта
+            'between1And3' — 1–3 года
+            'between3And6' — 3–6 лет
+            'moreThan6'    — более 6 лет
+
+    employment       : list[str]
+        Тип занятости (несколько значений — ИЛИ).
+        Допустимые значения:
+            'full'      — полная
+            'part'      — частичная
+            'project'   — проектная
+            'volunteer' — волонтёрство
+            'probation' — стажировка
+
+    order_by         : str
+        Сортировка результатов.
+        Допустимые значения:
+            'relevance'        — по соответствию (по умолчанию)
+            'salary_desc'      — по убыванию зарплаты
+            'salary_asc'       — по возрастанию зарплаты
+            'name'             — по названию
+            'publication_time' — по дате публикации
+
+    search_field     : str
+        Область поиска текста запроса.
+        ''     — везде (название + описание, по умолчанию)
+        'name' — только в названии вакансии
+
+    Пост-фильтры  (применяются к уже собранным результатам)
+    ─────────────────────────────────────────────────────────
+    salary_to         : int | None
+        Верхняя граница ЗП в ₽. Если минимальная ЗП в вакансии явно превышает
+        это значение — вакансия отсеивается. Вакансии без ЗП сохраняются.
+        Пример: 300_000
+
+    exclude_companies : list[str]
+        Исключить вакансии компаний, чьё название содержит любую из подстрок
+        (без учёта регистра).
+        Пример: ["HeadHunter", "Яндекс"]
+
+    require_keywords  : list[str]
+        Оставить только вакансии, в названии которых присутствуют ВСЕ слова из списка
+        (без учёта регистра).
+        Пример: ["AI", "backend"]
+
+    exclude_keywords  : list[str]
+        Исключить вакансии, в названии которых есть ХОТЯ БЫ ОДНО слово из списка
+        (без учёта регистра).
+        Пример: ["стажёр", "junior", "intern"]
+    """
+
+    # URL-фильтры
+    salary_from: int | None = None
+    only_with_salary: bool = False
+    schedule: list[str] = field(default_factory=list)
+    experience: list[str] = field(default_factory=list)
+    employment: list[str] = field(default_factory=list)
+    order_by: str = "relevance"
+    search_field: str = ""
+
+    # Пост-фильтры
+    salary_to: int | None = None
+    exclude_companies: list[str] = field(default_factory=list)
+    require_keywords: list[str] = field(default_factory=list)
+    exclude_keywords: list[str] = field(default_factory=list)
+
 
 class HHParser:
 
@@ -26,6 +154,7 @@ class HHParser:
         search_queries: list[str],
         area: int,
         max_pages: int,
+        filters: SearchFilters | None = None,
         save_to_json: bool = False,
         save_to_csv: bool = False,
         results_json_path: Optional[str] = RESULTS_JSON,
@@ -35,12 +164,42 @@ class HHParser:
         self.search_queries = search_queries
         self.area = area
         self.max_pages = max_pages
+        self.filters = filters or SearchFilters()
         self.results_json_path = results_json_path
         self.results_csv_path = results_csv_path
         self.save_to_json = save_to_json
         self.save_to_csv = save_to_csv
         self.csv_override = csv_override
         self.results = []
+
+    def _build_url(self, query: str, page_num: int) -> str:
+        """Строит URL запроса с учётом всех URL-фильтров.
+
+        Списковые параметры (schedule, experience, employment) urlencode разворачивает
+        в повторяющиеся ключи: schedule=remote&schedule=flexible и т.д.
+        None-значения отсеиваются до передачи в urlencode — незаданные фильтры
+        просто не попадают в URL.
+        """
+        filters = self.filters
+
+        param_map = {
+            "text": query,
+            "area": self.area,
+            "page": page_num,
+            "per_page": 20,
+            "salary": filters.salary_from,
+            "only_with_salary": "true" if filters.only_with_salary else None,
+            "schedule": filters.schedule or None,
+            "experience": filters.experience or None,
+            "employment": filters.employment or None,
+            "order_by": filters.order_by if filters.order_by != "relevance" else None,
+            "search_field": filters.search_field or None,
+        }
+
+        active_params = {
+            key: value for key, value in param_map.items() if value is not None
+        }
+        return "https://hh.ru/search/vacancy?" + urlencode(active_params, doseq=True)
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -52,55 +211,51 @@ class HHParser:
         Ищет зарплату в карточке: сначала через data-qa-compensation,
         потом через любой элемент с «₽» в тексте.
         """
-        # Вариант 1: data-qa содержит "compensation-frequency"
-        # sal_qa = card.query_selector_all('[data-qa*="compensation-frequency"]')
-        # Это теги-метки ("два раза в месяц"), а сама сумма — их родительский контейнер
-        # Поэтому берём весь compensation-блок через класс compensation-labels
-        # Вариант 2: просто ищем текст с «₽»
-        return None  # Playwright — async, обрабатываем ниже
+        return None
+
+    # Field parsers
 
     async def _get_salary(self, card) -> str:
         """Async-вариант: проходит по всем span/div карточки в поисках ₽."""
-        # Сначала ищем явный data-qa
-        sal_els = await card.query_selector_all(
+        salary_els = await card.query_selector_all(
             '[data-qa*="vacancy-serp__vacancy-compensation"]'
         )
-        for el in sal_els:
-            t = self._clean(await el.inner_text())
-            if t and "₽" in t:  # только элементы с реальной суммой
-                return t
+        for salary_el in salary_els:
+            salary_text = self._clean(await salary_el.inner_text())
+            if salary_text and "₽" in salary_text:
+                return salary_text
 
-        # Запасной вариант — любой элемент с ₽ и длиной < 80
         all_els = await card.query_selector_all("span, div")
-        for el in all_els:
-            t = self._clean(await el.inner_text())
-            if "₽" in t and len(t) < 80:
-                # Убираем мусор ("Выплаты: два раза в месяц")
-                amount = re.sub(
-                    r"(Выплаты.*|Опыт.*|на руки|на счёт)", "", t, flags=re.I
+        for element in all_els:
+            element_text = self._clean(await element.inner_text())
+            if "₽" in element_text and len(element_text) < 80:
+                cleaned_amount = re.sub(
+                    r"(Выплаты.*|Опыт.*|на руки|на счёт)", "", element_text, flags=re.I
                 )
-                amount = self._clean(amount)
-                if amount:
-                    return amount
+                cleaned_amount = self._clean(cleaned_amount)
+                if cleaned_amount:
+                    return cleaned_amount
         return "не указана"
 
     async def _get_schedule(self, card) -> str:
         """Формат: удалёнка / гибрид / офис."""
-        remote = await card.query_selector(
+        remote_el = await card.query_selector(
             '[data-qa="vacancy-label-work-schedule-remote"]'
         )
-        if remote:
-            return self._clean(await remote.inner_text())
+        if remote_el:
+            return self._clean(await remote_el.inner_text())
         return "—"
 
     async def _get_experience(self, card) -> str:
         """Требуемый опыт."""
-        exp = await card.query_selector(
+        experience_el = await card.query_selector(
             '[data-qa*="vacancy-serp__vacancy-work-experience"]'
         )
-        if exp:
-            return self._clean(await exp.inner_text())
+        if experience_el:
+            return self._clean(await experience_el.inner_text())
         return "—"
+
+    # Page parser
 
     async def parse_page(self, page) -> list[dict]:
         """Парсит все карточки с текущей страницы выдачи."""
@@ -108,16 +263,15 @@ class HHParser:
             '[data-qa="vacancy-serp__vacancy"]', timeout=15_000
         )
         cards = await page.query_selector_all('[data-qa="vacancy-serp__vacancy"]')
+        page_results = []
 
         for card in cards:
             try:
-                # Название + ссылка
                 title_el = await card.query_selector('[data-qa="serp-item__title"]')
                 title = self._clean(await title_el.inner_text()) if title_el else "—"
                 href = await title_el.get_attribute("href") if title_el else None
-                link = href.split("?")[0] if href else "—"  # чистый URL без трекинга
+                link = href.split("?")[0] if href else "—"
 
-                # Компания
                 company_el = await card.query_selector(
                     '[data-qa="vacancy-serp__vacancy-employer"]'
                 )
@@ -125,20 +279,17 @@ class HHParser:
                     self._clean(await company_el.inner_text()) if company_el else "—"
                 )
 
-                # Зарплата
                 salary = await self._get_salary(card)
 
-                # Город
                 city_el = await card.query_selector(
                     '[data-qa="vacancy-serp__vacancy-address"]'
                 )
                 city = self._clean(await city_el.inner_text()) if city_el else "—"
 
-                # Формат работы и опыт
                 schedule = await self._get_schedule(card)
                 experience = await self._get_experience(card)
 
-                self.results.append(
+                page_results.append(
                     {
                         "title": title,
                         "company": company,
@@ -152,10 +303,10 @@ class HHParser:
             except Exception as exc:
                 logger.error(f"    [!] Ошибка при разборе карточки: {exc}")
 
-        return self.results
+        return page_results
 
     async def search(self, browser, query: str) -> list[dict]:
-        """Ищет вакансии по одному запросу, обходит MAX_PAGES страниц."""
+        """Ищет вакансии по одному запросу, обходит max_pages страниц."""
         ctx = await browser.new_context(
             locale="ru-RU",
             user_agent=(
@@ -169,24 +320,16 @@ class HHParser:
 
         try:
             for page_num in range(self.max_pages):
-                url = (
-                    f"https://hh.ru/search/vacancy"
-                    f"?text={query.replace(' ', '+')}"
-                    f"&area={AREA}"
-                    f"&page={page_num}"
-                    f"&per_page=20"
-                )
+                url = self._build_url(query, page_num)
                 logger.info(f"  ↳ стр. {page_num + 1}: {url}")
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_200)
 
-                # Проверяем пустую выдачу
                 content = await page.content()
                 if "Ничего не найдено" in content:
                     logger.info("    [!] Нет результатов — стоп")
                     break
 
-                # Ждём карточки (если нет — стоп)
                 try:
                     await page.wait_for_selector(
                         '[data-qa="vacancy-serp__vacancy"]', timeout=8_000
@@ -199,12 +342,11 @@ class HHParser:
                 if not page_vacancies:
                     break
 
-                for v in page_vacancies:
-                    v["query"] = query
+                for vacancy in page_vacancies:
+                    vacancy["query"] = query
                 all_results.extend(page_vacancies)
                 logger.info(f"    ✓ найдено: {len(page_vacancies)}")
 
-                # Следующая страница?
                 next_btn = await page.query_selector('[data-qa="pager-next"]')
                 if not next_btn:
                     break
@@ -216,10 +358,81 @@ class HHParser:
 
         return all_results
 
+    # Post-filters
+
+    def _apply_filters(self, data: list[dict]) -> list[dict]:
+        """Применяет пост-фильтры к собранным вакансиям."""
+        filters = self.filters
+        result = data
+
+        # Исключить компании по подстроке
+        if filters.exclude_companies:
+            excluded_names = [company.lower() for company in filters.exclude_companies]
+            before = len(result)
+            result = [
+                vacancy
+                for vacancy in result
+                if not any(
+                    excluded in vacancy["company"].lower()
+                    for excluded in excluded_names
+                )
+            ]
+            logger.info(f"  exclude_companies: {before} → {len(result)}")
+
+        # Обязательные слова в названии (все сразу)
+        if filters.require_keywords:
+            required_words = [keyword.lower() for keyword in filters.require_keywords]
+            before = len(result)
+            result = [
+                vacancy
+                for vacancy in result
+                if all(word in vacancy["title"].lower() for word in required_words)
+            ]
+            logger.info(f"  require_keywords:  {before} → {len(result)}")
+
+        # Запрещённые слова в названии (хотя бы одно — убираем)
+        if filters.exclude_keywords:
+            excluded_words = [keyword.lower() for keyword in filters.exclude_keywords]
+            before = len(result)
+            result = [
+                vacancy
+                for vacancy in result
+                if not any(word in vacancy["title"].lower() for word in excluded_words)
+            ]
+            logger.info(f"  exclude_keywords:  {before} → {len(result)}")
+
+        # Верхняя граница ЗП (пост-фильтр, т.к. hh.ru поддерживает только salary_from)
+        if filters.salary_to:
+            before = len(result)
+            filtered_by_salary = []
+            for vacancy in result:
+                salary_str = vacancy["salary"]
+                if salary_str == "не указана":
+                    filtered_by_salary.append(vacancy)
+                    continue
+                # Извлекаем все числа из строки вида "100 000 – 200 000 ₽"
+                salary_numbers = [
+                    int(re.sub(r"\s|\u202f", "", num_str))
+                    for num_str in re.findall(
+                        r"[\d][\d\s\u202f]*[\d]|[\d]+", salary_str
+                    )
+                    if re.sub(r"\s|\u202f", "", num_str).isdigit()
+                ]
+                # Если минимум диапазона явно выше лимита — пропускаем
+                if salary_numbers and min(salary_numbers) > filters.salary_to:
+                    continue
+                filtered_by_salary.append(vacancy)
+            result = filtered_by_salary
+            logger.info(f"  salary_to:         {before} → {len(result)}")
+
+        return result
+
+    # Saving
+
     def save_json(self, data: list[dict]) -> None:
-        with open(RESULTS_JSON, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info(f"  ✓ {RESULTS_JSON}  ({len(data)} записей)")
+        with open(self.results_json_path, "w", encoding="utf-8") as output_file:
+            json.dump(data, output_file, ensure_ascii=False, indent=2)
+        logger.info(f"  ✓ {self.results_json_path}  ({len(data)} записей)")
 
     def save_csv(self, data: list[dict]) -> None:
         if not data:
@@ -234,28 +447,89 @@ class HHParser:
             "link",
             "query",
         ]
-        # self.results_csv_path уже учитывает csv_override
-        with open(self.results_csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(data)
+        with open(
+            self.results_csv_path, "w", newline="", encoding="utf-8-sig"
+        ) as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(data)
         logger.info(f"  ✓ {self.results_csv_path}")
 
     def deduplicate(self, data: list[dict]) -> list[dict]:
-        seen, unique = set(), []
-        for v in data:
-            if v["link"] not in seen:
-                seen.add(v["link"])
-                unique.append(v)
-        return unique
+        seen_links, unique_vacancies = set(), []
+        for vacancy in data:
+            if vacancy["link"] not in seen_links:
+                seen_links.add(vacancy["link"])
+                unique_vacancies.append(vacancy)
+        return unique_vacancies
 
-    async def run_parser(self):
+    def _log_filters(self) -> None:
+        """Логирует все активные фильтры."""
+        # todo плохой вонючий код - подумать как переделать
+        filters = self.filters
+        search_field_label = (
+            "названию" if filters.search_field == "name" else filters.search_field
+        )
+
+        descriptions = {
+            "ЗП от": f"{filters.salary_from:,} ₽" if filters.salary_from else None,
+            "ЗП до": f"{filters.salary_to:,} ₽" if filters.salary_to else None,
+            "только с ЗП": "да" if filters.only_with_salary else None,
+            "график": ", ".join(
+                SCHEDULE_LABELS.get(val, val) for val in filters.schedule
+            )
+            or None,
+            "опыт": ", ".join(
+                EXPERIENCE_LABELS.get(val, val) for val in filters.experience
+            )
+            or None,
+            "занятость": ", ".join(
+                EMPLOYMENT_LABELS.get(val, val) for val in filters.employment
+            )
+            or None,
+            "сортировка": (
+                ORDER_LABELS.get(filters.order_by, filters.order_by)
+                if filters.order_by != "relevance"
+                else None
+            ),
+            "поиск по": search_field_label if filters.search_field else None,
+            "исключить компании": (
+                ", ".join(filters.exclude_companies)
+                if filters.exclude_companies
+                else None
+            ),
+            "обязательные слова": (
+                ", ".join(filters.require_keywords)
+                if filters.require_keywords
+                else None
+            ),
+            "исключить слова": (
+                ", ".join(filters.exclude_keywords)
+                if filters.exclude_keywords
+                else None
+            ),
+        }
+
+        active_filters = {
+            label: value for label, value in descriptions.items() if value
+        }
+
+        if active_filters:
+            logger.info("  Фильтры:")
+            for label, value in active_filters.items():
+                logger.info(f"    • {label}: {value}")
+        else:
+            logger.info("  Фильтры: не заданы")
+
+    async def run_parser(self) -> list[dict]:
         logger.info("=" * 60)
-        logger.info("  hh.ru Parser  ")
+        logger.info("  hh.ru Parser")
         logger.info(f"  Запросы: {', '.join(self.search_queries)}")
         logger.info(
-            f"  Регион: {'Москва' if AREA == 1 else 'Вся Россия'}  |  Страниц: {self.max_pages}"
+            f"  Регион: {'Москва' if self.area == 1 else 'Вся Россия'}"
+            f"  |  Страниц: {self.max_pages}"
         )
+        self._log_filters()
         logger.info("=" * 60)
 
         all_vacancies: list[dict] = []
@@ -272,24 +546,60 @@ class HHParser:
 
             await browser.close()
 
-        unique = self.deduplicate(all_vacancies)
+        unique_vacancies = self.deduplicate(all_vacancies)
         logger.info(f"\n{'─' * 60}")
-        logger.info(f"Уникальных вакансий: {len(unique)}")
+        logger.info(f"Уникальных вакансий (до пост-фильтров): {len(unique_vacancies)}")
+
+        filtered_vacancies = self._apply_filters(unique_vacancies)
+        logger.info(
+            f"Уникальных вакансий (после пост-фильтров): {len(filtered_vacancies)}"
+        )
         logger.info(f"{'─' * 60}")
 
-        logger.info("\nСохранение:")
         if self.save_to_json:
-            self.save_json(unique)
-        if self.save_csv:
-            self.save_csv(unique)
+            self.save_json(filtered_vacancies)
+        if self.save_to_csv:
+            self.save_csv(filtered_vacancies)
 
-        # Превью
         logger.info(f"\n{'─' * 60}")
         logger.info("Топ-10 результатов:")
         logger.info(f"{'─' * 60}")
-        for v in unique[:10]:
-            logger.info(f"  {v['title']}")
-            logger.info(f"    {v['company']}  |  {v['city']}  |  {v['salary']}")
-            if v["experience"] != "—":
-                logger.info(f"    {v['experience']}  |  {v['schedule']}")
-            logger.info(f"    {v['link']}")
+        for vacancy in filtered_vacancies[:10]:
+            logger.info(f"  {vacancy['title']}")
+            logger.info(
+                f"    {vacancy['company']}  |  {vacancy['city']}  |  {vacancy['salary']}"
+            )
+            if vacancy["experience"] != "—":
+                logger.info(f"    {vacancy['experience']}  |  {vacancy['schedule']}")
+            logger.info(f"    {vacancy['link']}")
+
+        return filtered_vacancies
+
+
+if __name__ == "__main__":
+    filters = SearchFilters(
+        # URL-фильтры
+        salary_from=150_000,
+        only_with_salary=True,
+        schedule=["remote", "flexible"],
+        experience=["between1And3", "between3And6"],
+        employment=["full"],
+        order_by="salary_desc",
+        search_field="name",
+        # Пост-фильтры
+        salary_to=500_000,
+        exclude_companies=["Headhunter", "Авито"],
+        require_keywords=["AI"],
+        exclude_keywords=["стажёр", "intern", "junior"],
+    )
+
+    parser = HHParser(
+        search_queries=["AI разработчик", "ML engineer", "LLM developer"],
+        area=1,
+        max_pages=3,
+        filters=filters,
+        save_to_json=True,
+        save_to_csv=True,
+    )
+
+    asyncio.run(parser.run_parser())
