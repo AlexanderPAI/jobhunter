@@ -3,6 +3,7 @@ import csv
 import json
 import logging
 import re
+from typing import Optional
 
 from playwright.async_api import async_playwright
 
@@ -11,15 +12,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("PARSER")
 
-
-SEARCH_QUERIES = [
-    "AI разработчик",
-    "AI Product Lead",
-    "ML engineer",
-    "LLM разработчик",
-    "AI инженер",
-]
-
+# DEFAULT
 AREA = 1  # 1 = Москва; 0 = вся Россия
 MAX_PAGES = 3  # страниц на каждый запрос (50 вакансий / страница)
 RESULTS_JSON = "hh_vacancies.json"
@@ -35,17 +28,18 @@ class HHParser:
         max_pages: int,
         save_to_json: bool = False,
         save_to_csv: bool = False,
-        results_json_path=RESULTS_JSON,
-        results_csv_path=RESULTS_CSV,
+        results_json_path: Optional[str] = RESULTS_JSON,
+        results_csv_path: Optional[str] = RESULTS_CSV,
         csv_override: bool = False,
     ) -> None:
         self.search_queries = search_queries
         self.area = area
         self.max_pages = max_pages
-        self.results_json_path = RESULTS_JSON
-        self.results_csv_path = RESULTS_CSV
+        self.results_json_path = results_json_path
+        self.results_csv_path = results_csv_path
         self.save_to_json = save_to_json
         self.save_to_csv = save_to_csv
+        self.csv_override = csv_override
         self.results = []
 
     @staticmethod
