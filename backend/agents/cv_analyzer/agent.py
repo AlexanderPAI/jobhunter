@@ -61,6 +61,7 @@ class CVAnalyzerAgent:
     # Нода 1: читаем файл резюме
     async def extract_cv(self, state: State) -> dict:
         cv_text = extract_cv_text.invoke({"cv_path": state["cv_path"]})
+        logger.info(f"Читаю резюме {state['cv_path']}")
         logger.info(f"Длина текста CV: {len(cv_text)}")
 
         return {
@@ -72,6 +73,7 @@ class CVAnalyzerAgent:
 
     # Нода 2: создаем профиль пользователя
     async def build_profile(self, state: State) -> dict:
+        logger.info("Создаю профиль пользователя")
         prompt = [
             {"role": "system", "content": build_profile_system},
             {"role": "user", "content": state["cv_text"]},
@@ -86,7 +88,9 @@ class CVAnalyzerAgent:
         except (json.JSONDecodeError, AttributeError):
             user_profile = {}
 
-        logger.info(f"Профиль построен: {list(user_profile.keys())}")
+        logger.info("Профиль построен:")
+        for key, value in user_profile.items():
+            logger.info(f"{key}: {value}")
 
         return {
             "user_profile": user_profile,
@@ -148,7 +152,7 @@ class CVAnalyzerAgent:
 
 async def _main():
     cv_agent = CVAnalyzerAgent()
-    final_answer, _ = await cv_agent.run("resume.pdf")
+    final_answer, _ = await cv_agent.run("resume.doc")
     with open("final_answer.txt", "w") as f:
         f.write(final_answer)
 

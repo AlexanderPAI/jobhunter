@@ -30,7 +30,7 @@ from backend.config import cfg
 from backend.models.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
-logger = logging.getLogger("AGENT")
+logger = logging.getLogger("SEARCHER")
 
 # Prompts
 greeting_prompt = load_prompt(Path(__file__).parent / "prompts/base.yaml", "greeting")

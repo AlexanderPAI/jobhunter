@@ -1,41 +1,34 @@
 import asyncio
 import logging
 
-from backend.utils.parser import HHParser
+from langchain_core.messages import HumanMessage
+
+from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
+from backend.agents.searcher.agent import Agent as SearcherAgent
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("MULTIAGENT")
 
-
-def get_quires():
-    queries = []
-    while True:
-        query = input(
-            "Введи название вакансии (для перехода к следующему этапу, введи END: "
-        )
-        if query == "END":
-            break
-        queries.append(query)
-    return queries
-
-
-def get_pages_amount():
-    max_pages = input("Введи количество страниц, которое нужно распарсить: ")
-    return int(max_pages)
+cv_analyzer_agent = CVAnalyzerAgent()
+searcher_agent = SearcherAgent()
 
 
 async def main():
-    search_queries = get_quires()
-    max_pages = get_pages_amount()
-
-    parser = HHParser(
-        search_queries=search_queries,
-        area=1,
-        max_pages=max_pages,
-        save_to_csv=True,
+    searcher_prompt, _ = await cv_analyzer_agent.run("resume.pdf")
+    answer, _ = await searcher_agent.run(
+        {
+            "messages": [HumanMessage(content=searcher_prompt)],
+            "greeted": True,
+            "waiting_for_user": False,
+            "search_queries": [],
+            "filters": None,
+            "area": 1,
+            "max_pages": 3,
+            "csv_path": "",
+            "final_answer": "",
+        }
     )
-    await parser.run_parser()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.run(main())
