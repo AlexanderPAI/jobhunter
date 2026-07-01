@@ -18,88 +18,25 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Annotated, List, Optional, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from backend.base_agent.tools import parse_vacancies
+from backend.agents.searcher.tools import parse_vacancies
 from backend.config import cfg
 from backend.models.openrouter import OpenRouterAdapter
+from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("AGENT")
 
-# Приветствие
-# todo hard-code
-GREETING = """\
-Привет! Я помогу найти вакансии на hh.ru и сохранить результат в CSV.
-
-Расскажи, что ищешь. Можно указать:
-
-  • Названия вакансий — одно или несколько (я добавлю похожие сам)
-    Пример: «Python backend, FastAPI разработчик»
-
-  • Регион — «Москва» (по умолчанию) или «вся Россия»
-
-  • Зарплата — «от 150 000» / «до 300 000» / «от 150 до 300»
-
-  • Только с указанной ЗП — «только с зарплатой»
-
-  • График — удалёнка / полный день / гибкий / сменный / вахта
-
-  • Опыт — без опыта / 1–3 года / 3–6 лет / более 6 лет
-
-  • Занятость — полная / частичная / проектная / стажировка
-
-  • Сортировка — по убыванию ЗП / по возрастанию ЗП / по дате
-
-  • Исключить компании — «без Яндекса, без HeadHunter»
-
-  • Обязательные слова в названии — «обязательно AI»
-
-  • Исключить слова в названии — «без стажёр, без junior»
-
-Можно писать в свободной форме — я разберу сам.\
-"""
-
 # Prompts
-# todo перенести в yaml
-
-PARSE_USER_INPUT_SYSTEM = """\
-Ты — ассистент по поиску работы. Пользователь описал, какую работу ищет.
-
-Твоя задача — вернуть ТОЛЬКО валидный JSON без каких-либо пояснений.
-
-Структура JSON:
-{
-  "search_queries": [...],   // список запросов: оригинальные + похожие (max 12)
-  "area": 1,                 // 1 = Москва (по умолчанию), 0 = вся Россия
-  "max_pages": 3,            // страниц на запрос (по умолчанию 3)
-  "filters": {
-    "salary_from": null,          // int | null
-    "only_with_salary": false,    // bool
-    "schedule": [],               // список из: "remote","fullDay","flexible","shift","flyInFlyOut"
-    "experience": [],             // список из: "noExperience","between1And3","between3And6","moreThan6"
-    "employment": [],             // список из: "full","part","project","volunteer","probation"
-    "order_by": "relevance",      // "relevance"|"salary_desc"|"salary_asc"|"name"|"publication_time"
-    "search_field": "",           // "" | "name"
-    "salary_to": null,            // int | null
-    "exclude_companies": [],
-    "require_keywords": [],
-    "exclude_keywords": []
-  }
-}
-
-Правила:
-- Расширяй search_queries синонимами и смежными наименованиями.
-- schedule, experience, employment — ТОЛЬКО из допустимых значений выше.
-- «удалёнка» → schedule: ["remote"]
-- «без junior/стажёр» → exclude_keywords: ["junior","стажёр"]
-- «только с зарплатой» → only_with_salary: true
-- «вся Россия» → area: 0
-- Не добавляй комментарии в JSON, верни только объект.\
-"""
+greeting_prompt = load_prompt(Path(__file__).parent / "prompts/base.yaml", "greeting")
+parse_user_input_system = load_prompt(
+    Path(__file__).parent / "prompts/base.yaml", "parse_user_input_system"
+)
 
 
 class State(TypedDict):
@@ -128,7 +65,7 @@ class Agent:
         return {
             "greeted": True,
             "waiting_for_user": True,
-            "messages": [AIMessage(content=GREETING)],
+            "messages": [AIMessage(content=greeting_prompt)],
         }
 
     # Роутер после Ноды 1
@@ -136,7 +73,7 @@ class Agent:
         for message in reversed(state["messages"]):
             if isinstance(message, HumanMessage):
                 return "parse_user_input"
-            if isinstance(message, AIMessage) and message.content == GREETING:
+            if isinstance(message, AIMessage) and message.content == greeting_prompt:
                 return END
         return END
 
@@ -150,7 +87,7 @@ class Agent:
                 break
 
         prompt = [
-            {"role": "system", "content": PARSE_USER_INPUT_SYSTEM},
+            {"role": "system", "content": parse_user_input_system},
             {"role": "user", "content": user_text},
         ]
 
