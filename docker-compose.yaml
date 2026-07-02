@@ -9,9 +9,13 @@ services:
       - "8080:8080"
     volumes:
       - ./backend/storage:/app/backend/storage:rw
+    env_file:
+      - .env
 
   frontend:
     container_name: frontend
     build:
       context: .
       dockerfile: frontend/Dockerfile
+    ports:
+      - "8501:8501"
