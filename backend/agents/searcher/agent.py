@@ -189,25 +189,29 @@ class Agent:
 
         return workflow.compile()
 
-    async def run(self, state: State) -> tuple[str, State]:
-        """
-        Единственная точка входа.
-        - Первый вызов: state["greeted"] = False → граф отправит приветствие и остановится.
-        - Второй вызов: state["greeted"] = True + HumanMessage в messages → граф выполнит поиск.
+    async def run(self, message: str) -> str:
+        initial_state: State = {
+            "messages": [HumanMessage(content=message)],
+            "greeted": True,
+            "waiting_for_user": False,
+            "search_queries": [],
+            "filters": None,
+            "area": 1,
+            "max_pages": 3,
+            "csv_path": "",
+            "final_answer": "",
+        }
 
-        Returns:
-            (текст последнего AIMessage, обновлённый state)
-        """
-        result_state = await self.graph.ainvoke(state)
-        last_message = next(
-            (
-                msg
-                for msg in reversed(result_state["messages"])
-                if isinstance(msg, AIMessage)
-            ),
-            None,
-        )
-        return (last_message.content if last_message else ""), result_state
+        result_state = await self.graph.ainvoke(initial_state)
+
+        csv_path = result_state.get("csv_path", "")
+        if not csv_path:
+            raise RuntimeError("Parser did not return csv_path")
+
+        if not Path(csv_path).exists():
+            raise RuntimeError(f"CSV file does not exist: {csv_path}")
+
+        return csv_path
 
 
 async def _main():

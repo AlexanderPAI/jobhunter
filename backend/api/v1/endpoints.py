@@ -3,6 +3,10 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+
+from backend.agents.searcher.agent import Agent as SearchAgent
+from backend.api.v1.schemes import SearcherRequest
 
 router = APIRouter(prefix="/v1")
 
@@ -16,6 +20,9 @@ ALLOWED_TYPES = {
     "application/msword": ".doc",
     "text/plain": ".txt",
 }
+
+
+search_agent = SearchAgent()
 
 
 @router.post("/upload_cv")
@@ -37,3 +44,18 @@ async def upload_cv(file: UploadFile = File(...)):
         "content_type": file.content_type,
         "path": str(file_path),
     }
+
+
+@router.post("/searcher/chat", response_class=FileResponse)
+async def searcher_chat(searcher_request: SearcherRequest):
+    result_path = await search_agent.run(searcher_request.message)
+    result_path = Path(result_path)
+
+    if not result_path.exists():
+        raise HTTPException(status_code=500, detail="CSV file was not generated")
+
+    return FileResponse(
+        path=str(result_path),
+        media_type="text/csv; charset=utf-8",
+        filename=result_path.name,
+    )
