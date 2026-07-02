@@ -1,34 +1,10 @@
-import asyncio
-import logging
+import uvicorn
+from fastapi import FastAPI
 
-from langchain_core.messages import HumanMessage
+from backend.api.v1.endpoints import router
 
-from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
-from backend.agents.searcher.agent import Agent as SearcherAgent
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("MULTIAGENT")
-
-cv_analyzer_agent = CVAnalyzerAgent()
-searcher_agent = SearcherAgent()
-
-
-async def main():
-    searcher_prompt, _ = await cv_analyzer_agent.run("resume.pdf")
-    answer, _ = await searcher_agent.run(
-        {
-            "messages": [HumanMessage(content=searcher_prompt)],
-            "greeted": True,
-            "waiting_for_user": False,
-            "search_queries": [],
-            "filters": None,
-            "area": 1,
-            "max_pages": 3,
-            "csv_path": "",
-            "final_answer": "",
-        }
-    )
-
+app = FastAPI()
+app.include_router(router)
 
 if __name__ == "__main__":
-    loop = asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=8080)

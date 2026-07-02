@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 from typing import List
 
 from langchain_core.tools import tool
@@ -31,7 +32,11 @@ async def parse_vacancies(
 
     if not csv_path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = f"vacancies_{timestamp}.csv"
+        csv_path = Path(
+            Path(__file__).parent.parent.parent
+            / f"storage/results/vacancies_{timestamp}.csv"
+        )
+        # csv_path = f"storage/results/vacancies_{timestamp}.csv"
 
     search_filters = SearchFilters(
         **{key: value for key, value in filters.items() if value is not None}
