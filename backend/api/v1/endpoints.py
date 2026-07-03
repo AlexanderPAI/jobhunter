@@ -1,12 +1,14 @@
 import shutil
 import uuid
 from pathlib import Path
+from typing import Any, Dict
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
 from backend.agents.searcher.agent import Agent as SearchAgent
+from backend.agents.vacancy_filter.agent import VacancyFilterAgent
 from backend.api.v1.schemes import SearcherRequest
 
 router = APIRouter(prefix="/v1")
@@ -22,9 +24,9 @@ ALLOWED_TYPES = {
     "text/plain": ".txt",
 }
 
-
-search_agent = SearchAgent()
 cv_analyzer_agent = CVAnalyzerAgent()
+search_agent = SearchAgent()
+vacancy_filter_agent = VacancyFilterAgent()
 
 
 @router.post("/upload_cv")
@@ -48,21 +50,6 @@ async def upload_cv(file: UploadFile = File(...)):
     }
 
 
-@router.post("/searcher/chat", response_class=FileResponse)
-async def searcher_chat(searcher_request: SearcherRequest):
-    result_path = await search_agent.run(searcher_request.message)
-    result_path = Path(result_path)
-
-    if not result_path.exists():
-        raise HTTPException(status_code=500, detail="CSV file was not generated")
-
-    return FileResponse(
-        path=str(result_path),
-        media_type="text/csv; charset=utf-8",
-        filename=result_path.name,
-    )
-
-
 @router.post("/cv_analyzer/send_cv")
 async def cv_analyzer(file: UploadFile = File(...)):
     if file.content_type not in ALLOWED_TYPES:
@@ -83,14 +70,35 @@ async def cv_analyzer(file: UploadFile = File(...)):
         "user_profile": user_profile,
     }
 
-    # result_path = await search_agent.run(search_prompt)
-    # result_path = Path(result_path)
-    #
-    # if not result_path.exists():
-    #     raise HTTPException(status_code=500, detail="CSV file was not generated")
-    #
+
+@router.post("/searcher/chat")
+async def searcher_chat(searcher_request: SearcherRequest):
+    result_path = await search_agent.run(searcher_request.message)
+    result_path = Path(result_path)
+
+    if not result_path.exists():
+        raise HTTPException(status_code=500, detail="CSV file was not generated")
+
+    return {
+        "result_path": str(result_path),
+    }
     # return FileResponse(
     #     path=str(result_path),
     #     media_type="text/csv; charset=utf-8",
     #     filename=result_path.name,
     # )
+
+
+@router.post("/filter/check", response_class=FileResponse)
+async def filter_check(csv_path: str, user_profile: Dict[str, Any]):
+    result_path, _ = await vacancy_filter_agent.run(csv_path, user_profile)
+    result_path = Path(result_path)
+
+    if not result_path.exists():
+        raise HTTPException(status_code=500, detail="CSV file was not generated")
+
+    return FileResponse(
+        path=str(result_path),
+        media_type="text/csv; charset=utf-8",
+        filename=result_path.name,
+    )
