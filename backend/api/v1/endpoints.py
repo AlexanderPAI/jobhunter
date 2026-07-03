@@ -63,7 +63,7 @@ async def searcher_chat(searcher_request: SearcherRequest):
     )
 
 
-@router.post("/cv_analyzer/send_cv", response_class=FileResponse)
+@router.post("/cv_analyzer/send_cv")
 async def cv_analyzer(file: UploadFile = File(...)):
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
@@ -76,16 +76,21 @@ async def cv_analyzer(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    search_prompt, _ = await cv_analyzer_agent.run(str(file_path))
+    search_prompt, user_profile, _ = await cv_analyzer_agent.run(str(file_path))
 
-    result_path = await search_agent.run(search_prompt)
-    result_path = Path(result_path)
+    return {
+        "search_prompt": search_prompt,
+        "user_profile": user_profile,
+    }
 
-    if not result_path.exists():
-        raise HTTPException(status_code=500, detail="CSV file was not generated")
-
-    return FileResponse(
-        path=str(result_path),
-        media_type="text/csv; charset=utf-8",
-        filename=result_path.name,
-    )
+    # result_path = await search_agent.run(search_prompt)
+    # result_path = Path(result_path)
+    #
+    # if not result_path.exists():
+    #     raise HTTPException(status_code=500, detail="CSV file was not generated")
+    #
+    # return FileResponse(
+    #     path=str(result_path),
+    #     media_type="text/csv; charset=utf-8",
+    #     filename=result_path.name,
+    # )

@@ -9,12 +9,10 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY poetry.lock pyproject.toml ./
-
 RUN pip install poetry==2.4.1
 RUN poetry config virtualenvs.create false && poetry install --no-root
 
 FROM base AS proj
 
 COPY /frontend ./frontend
-
-CMD ["python3", "-m", "frontend.app"]
+CMD ["streamlit", "run", "/app/frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]

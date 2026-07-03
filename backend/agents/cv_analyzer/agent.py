@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Annotated, List, TypedDict
+from typing import Annotated, Any, List, TypedDict
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
@@ -130,7 +130,7 @@ class CVAnalyzerAgent:
 
         return workflow.compile()
 
-    async def run(self, cv_path: str) -> tuple[str, State]:
+    async def run(self, cv_path: str) -> tuple[str, dict[str, Any], State]:
         """
         Args:
             cv_path: путь к файлу резюме (.txt, .pdf, .docx)
@@ -147,7 +147,11 @@ class CVAnalyzerAgent:
         }
 
         result_state = await self.graph.ainvoke(initial_state)
-        return result_state.get("final_answer", ""), result_state
+        return (
+            result_state.get("final_answer", ""),
+            result_state.get("user_profile", ""),
+            result_state,
+        )
 
 
 async def _main():
