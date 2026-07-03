@@ -35,7 +35,7 @@ from backend.utils.prompt_loader import load_prompt
 logger = logging.getLogger("VACANCY_FILTER")
 
 filter_system_prompt = load_prompt(
-    Path(__file__).parent / "prompts/vacancy_filter.yaml", "filter_system"
+    Path(__file__).parent / "prompts/base.yaml", "filter_system"
 )
 
 # Сколько названий вакансий отправляем LLM за один запрос.
@@ -110,7 +110,10 @@ class VacancyFilterAgent:
             ]
 
             response = await self.llm.chat(prompt)
-            raw_content = response["choices"][0]["message"]["content"].strip()
+
+            raw_content = (
+                (response.get("choices") or [{}])[0].get("message", {}).get("content")
+            )
 
             try:
                 match = re.search(r"\[.*?\]", raw_content, re.DOTALL)

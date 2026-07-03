@@ -1,7 +1,6 @@
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Dict
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -9,7 +8,7 @@ from fastapi.responses import FileResponse
 from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
 from backend.agents.searcher.agent import Agent as SearchAgent
 from backend.agents.vacancy_filter.agent import VacancyFilterAgent
-from backend.api.v1.schemes import SearcherRequest
+from backend.api.v1.schemes import SearcherRequest, VacancyCheckerRequest
 
 router = APIRouter(prefix="/v1")
 
@@ -90,8 +89,10 @@ async def searcher_chat(searcher_request: SearcherRequest):
 
 
 @router.post("/filter/check", response_class=FileResponse)
-async def filter_check(csv_path: str, user_profile: Dict[str, Any]):
-    result_path, _ = await vacancy_filter_agent.run(csv_path, user_profile)
+async def filter_check(request: VacancyCheckerRequest):
+    result_path, _ = await vacancy_filter_agent.run(
+        request.csv_path, request.user_profile
+    )
     result_path = Path(result_path)
 
     if not result_path.exists():

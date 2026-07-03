@@ -12,7 +12,7 @@ async def parse_vacancies(
     search_queries: List[str],
     filters: dict,
     area: int = 1,
-    max_pages: int = 3,
+    max_pages: int = 1,
     csv_path: str = "",
 ) -> dict:
     """
