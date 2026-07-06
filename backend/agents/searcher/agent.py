@@ -1,5 +1,5 @@
 """
-HH.ru Job Search Agent
+Job Search Agent
 ======================
 
 Граф:
@@ -10,14 +10,16 @@ HH.ru Job Search Agent
 Диалог:
   1. greet       — агент объясняет что умеет и задаёт вопрос
   2. parse_user_input — LLM разбирает ответ в SearchFilters + список запросов
-  3. run_parser  — вызывает tool, сохраняет CSV
+  3. run_parser  — вызывает tools, сохраняет общий CSV
   4. done        — отвечает пользователю
 """
 
 import asyncio
+import csv
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, List, Optional, TypedDict
 
@@ -25,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from backend.agents.searcher.tools import parse_vacancies
+from backend.agents.searcher.tools import parse_habr_vacancies, parse_vacancies
 from backend.config import cfg
 from backend.models.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
@@ -52,6 +54,17 @@ class State(TypedDict):
 
 
 class Agent:
+    CSV_FIELDS = [
+        "title",
+        "company",
+        "salary",
+        "city",
+        "schedule",
+        "experience",
+        "link",
+        "query",
+    ]
+
     def __init__(self) -> None:
         self.llm = OpenRouterAdapter(
             openrouter_url="https://openrouter.ai/api/v1/chat/completions",
@@ -116,25 +129,85 @@ class Agent:
             ],
         }
 
+    @staticmethod
+    def _results_dir() -> Path:
+        results_dir = Path(__file__).parent.parent.parent / "storage/results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        return results_dir
+
+    @classmethod
+    def _merge_parser_csvs(
+        cls, source_paths: list[str | Path], result_path: Path
+    ) -> int:
+        rows = []
+        seen_links = set()
+
+        for source_path in source_paths:
+            path = Path(source_path)
+            if not path.exists():
+                logger.warning(f"CSV file does not exist and will be skipped: {path}")
+                continue
+
+            with path.open(newline="", encoding="utf-8-sig") as input_file:
+                reader = csv.DictReader(input_file)
+                for row in reader:
+                    link = row.get("link") or ""
+                    if link in seen_links:
+                        continue
+                    seen_links.add(link)
+                    rows.append({field: row.get(field, "") for field in cls.CSV_FIELDS})
+
+        with result_path.open("w", newline="", encoding="utf-8-sig") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=cls.CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        return len(rows)
+
     # Нода 3: запукаем тулу парсера
     async def run_parser_node(self, state: State) -> dict:
-        tool_result = await parse_vacancies.ainvoke(
-            {
-                "search_queries": state["search_queries"],
-                "filters": state.get("filters") or {},
-                "area": state.get("area", 1),
-                "max_pages": state.get("max_pages", 1),
-                "csv_path": "",
-            }
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        results_dir = self._results_dir()
+        hh_csv_path = results_dir / f"hh_vacancies_{timestamp}.csv"
+        habr_csv_path = results_dir / f"habr_vacancies_{timestamp}.csv"
+        result_csv_path = results_dir / f"vacancies_{timestamp}.csv"
+
+        parser_payload = {
+            "search_queries": state["search_queries"],
+            "filters": state.get("filters") or {},
+            "area": state.get("area", 1),
+            "max_pages": state.get("max_pages", 1),
+        }
+
+        hh_result, habr_result = await asyncio.gather(
+            parse_vacancies.ainvoke(
+                {
+                    **parser_payload,
+                    "csv_path": str(hh_csv_path),
+                }
+            ),
+            parse_habr_vacancies.ainvoke(
+                {
+                    **parser_payload,
+                    "csv_path": str(habr_csv_path),
+                }
+            ),
+        )
+
+        total_count = self._merge_parser_csvs(
+            [hh_result["csv_path"], habr_result["csv_path"]],
+            result_csv_path,
         )
 
         return {
-            "csv_path": tool_result["csv_path"],
+            "csv_path": str(result_csv_path),
             "messages": [
                 AIMessage(
                     content=(
-                        f"Парсинг завершён: {tool_result['total_count']} вакансий. "
-                        f"Файл: {tool_result['csv_path']}"
+                        f"Парсинг завершён: {total_count} вакансий. "
+                        f"HH: {hh_result['total_count']}, "
+                        f"Habr: {habr_result['total_count']}. "
+                        f"Файл: {result_csv_path}"
                     )
                 )
             ],

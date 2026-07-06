@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import html as html_lib
 import json
 import logging
 import re
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlencode
 
+import aiohttp
 from playwright.async_api import async_playwright
 
 logging.basicConfig(
@@ -571,6 +573,288 @@ class HHParser:
                 await asyncio.sleep(3.0)
 
             await browser.close()
+
+        unique_vacancies = self.deduplicate(all_vacancies)
+        logger.info(f"\n{'─' * 60}")
+        logger.info(f"Уникальных вакансий (до пост-фильтров): {len(unique_vacancies)}")
+
+        filtered_vacancies = self._apply_filters(unique_vacancies)
+        logger.info(
+            f"Уникальных вакансий (после пост-фильтров): {len(filtered_vacancies)}"
+        )
+        logger.info(f"{'─' * 60}")
+
+        if self.save_to_json:
+            self.save_json(filtered_vacancies)
+        if self.save_to_csv:
+            self.save_csv(filtered_vacancies)
+
+        logger.info(f"\n{'─' * 60}")
+        logger.info("Топ-10 результатов:")
+        logger.info(f"{'─' * 60}")
+        for vacancy in filtered_vacancies[:10]:
+            logger.info(f"  {vacancy['title']}")
+            logger.info(
+                f"    {vacancy['company']}  |  {vacancy['city']}  |  {vacancy['salary']}"
+            )
+            if vacancy["experience"] != "—":
+                logger.info(f"    {vacancy['experience']}  |  {vacancy['schedule']}")
+            logger.info(f"    {vacancy['link']}")
+
+        return filtered_vacancies
+
+
+class CareerHabrParser(HHParser):
+    """Парсер вакансий career.habr.com с тем же CSV-контрактом, что и HHParser."""
+
+    BETWEEN_PAGES_DELAY = 1.0
+
+    def _build_url(self, query: str, page_num: int) -> str:
+        """Строит URL поиска Career Habr.
+
+        У Habr Career другая модель фильтров, поэтому через URL отправляем только
+        устойчивые параметры поиска. Остальные ограничения применяются пост-фильтрами.
+        """
+        params: dict[str, object] = {
+            "type": "all",
+            "q": query,
+            "page": page_num + 1,
+        }
+        if self.area == 1:
+            params["city_id"] = 678  # Москва
+
+        return "https://career.habr.com/vacancies?" + urlencode(params, doseq=True)
+
+    @staticmethod
+    def _extract_ssr_state(page_html: str) -> dict:
+        match = re.search(
+            r'<script[^>]+data-ssr-state=["\']true["\'][^>]*>(.*?)</script>',
+            page_html,
+            re.DOTALL,
+        )
+        if not match:
+            return {}
+
+        raw_json = html_lib.unescape(match.group(1))
+        try:
+            return json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            logger.error(f"    [!] Не удалось разобрать SSR JSON Habr: {exc}")
+            return {}
+
+    @staticmethod
+    def _format_habr_salary(vacancy: dict) -> str:
+        salary = vacancy.get("salary") or {}
+        formatted_salary = salary.get("formatted")
+        return formatted_salary or "не указана"
+
+    @staticmethod
+    def _format_habr_city(vacancy: dict) -> str:
+        locations = vacancy.get("locations") or []
+        location_titles = [
+            location.get("title")
+            for location in locations
+            if isinstance(location, dict) and location.get("title")
+        ]
+        if location_titles:
+            return ", ".join(location_titles)
+        if vacancy.get("remoteWork"):
+            return "Удалённо"
+        return "—"
+
+    @staticmethod
+    def _format_habr_schedule(vacancy: dict) -> str:
+        if vacancy.get("remoteWork"):
+            return "Удалённо"
+
+        employment_labels = {
+            "full_time": "Полная занятость",
+            "part_time": "Частичная занятость",
+            "project": "Проектная работа",
+            "internship": "Стажировка",
+        }
+        employment = vacancy.get("employment")
+        return employment_labels.get(employment, "—")
+
+    @staticmethod
+    def _format_habr_experience(vacancy: dict) -> str:
+        qualification = vacancy.get("qualification")
+        if qualification:
+            return qualification
+
+        salary_qualification = vacancy.get("salaryQualification") or {}
+        return salary_qualification.get("title") or "—"
+
+    def _vacancy_from_habr_json(self, vacancy: dict) -> dict:
+        company = vacancy.get("company") or {}
+        href = vacancy.get("href") or ""
+        link = f"https://career.habr.com{href}" if href.startswith("/") else href
+
+        return {
+            "title": vacancy.get("title") or "—",
+            "company": company.get("title") or "—",
+            "salary": self._format_habr_salary(vacancy),
+            "city": self._format_habr_city(vacancy),
+            "schedule": self._format_habr_schedule(vacancy),
+            "experience": self._format_habr_experience(vacancy),
+            "link": link or "—",
+        }
+
+    @staticmethod
+    def _salary_numbers(salary: str) -> list[int]:
+        return [
+            int(re.sub(r"\s|\u202f", "", num_str))
+            for num_str in re.findall(r"[\d][\d\s\u202f]*[\d]|[\d]+", salary)
+            if re.sub(r"\s|\u202f", "", num_str).isdigit()
+        ]
+
+    def _apply_filters(self, data: list[dict]) -> list[dict]:
+        """Применяет общие и Habr-специфичные пост-фильтры."""
+        result = super()._apply_filters(data)
+        filters = self.filters
+
+        if filters.only_with_salary:
+            before = len(result)
+            result = [
+                vacancy
+                for vacancy in result
+                if vacancy["salary"] and vacancy["salary"] != "не указана"
+            ]
+            logger.info(f"  only_with_salary:  {before} → {len(result)}")
+
+        if filters.salary_from:
+            before = len(result)
+            result = [
+                vacancy
+                for vacancy in result
+                if (
+                    vacancy["salary"] != "не указана"
+                    and self._salary_numbers(vacancy["salary"])
+                    and max(self._salary_numbers(vacancy["salary"]))
+                    >= filters.salary_from
+                )
+            ]
+            logger.info(f"  salary_from:       {before} → {len(result)}")
+
+        if filters.schedule:
+            before = len(result)
+            requested_schedules = set(filters.schedule)
+
+            def schedule_matches(vacancy: dict) -> bool:
+                schedule = vacancy["schedule"].lower()
+                if "remote" in requested_schedules and "удал" in schedule:
+                    return True
+                if "fullDay" in requested_schedules and "удал" not in schedule:
+                    return True
+                return False
+
+            result = [vacancy for vacancy in result if schedule_matches(vacancy)]
+            logger.info(f"  schedule:          {before} → {len(result)}")
+
+        if filters.employment:
+            before = len(result)
+            employment_markers = {
+                "full": "полная",
+                "part": "частичная",
+                "project": "проект",
+                "probation": "стаж",
+            }
+            requested_markers = [
+                employment_markers[employment]
+                for employment in filters.employment
+                if employment in employment_markers
+            ]
+            if requested_markers:
+                result = [
+                    vacancy
+                    for vacancy in result
+                    if any(
+                        marker in vacancy["schedule"].lower()
+                        for marker in requested_markers
+                    )
+                ]
+                logger.info(f"  employment:        {before} → {len(result)}")
+
+        return result
+
+    async def _fetch_html(self, session: aiohttp.ClientSession, url: str) -> str:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.text()
+
+    async def _search_via_ssr(
+        self, session: aiohttp.ClientSession, query: str
+    ) -> list[dict]:
+        all_results: list[dict] = []
+
+        for page_num in range(self.max_pages):
+            url = self._build_url(query, page_num)
+            logger.info(f"  ↳ стр. {page_num + 1}: {url}")
+
+            if page_num > 0:
+                await asyncio.sleep(self.BETWEEN_PAGES_DELAY)
+
+            try:
+                page_html = await self._fetch_html(session, url)
+            except Exception as exc:
+                logger.error(f"    [!] Ошибка загрузки страницы Habr: {exc}")
+                break
+
+            state = self._extract_ssr_state(page_html)
+            vacancies_block = state.get("vacancies") or {}
+            page_vacancies = [
+                self._vacancy_from_habr_json(vacancy)
+                for vacancy in vacancies_block.get("list", [])
+                if isinstance(vacancy, dict)
+            ]
+
+            if not page_vacancies:
+                logger.info("    [!] Нет результатов — стоп")
+                break
+
+            for vacancy in page_vacancies:
+                vacancy["query"] = query
+            all_results.extend(page_vacancies)
+            logger.info(f"    ✓ найдено: {len(page_vacancies)}")
+
+            meta = vacancies_block.get("meta") or {}
+            total_pages = meta.get("totalPages")
+            if isinstance(total_pages, int) and page_num + 1 >= total_pages:
+                break
+
+        return all_results
+
+    async def run_parser(self) -> list[dict]:
+        logger.info("=" * 60)
+        logger.info("  Career Habr Parser")
+        logger.info(f"  Запросы: {', '.join(self.search_queries)}")
+        logger.info(
+            f"  Регион: {'Москва' if self.area == 1 else 'Вся Россия'}"
+            f"  |  Страниц: {self.max_pages}"
+        )
+        self._log_filters()
+        logger.info("=" * 60)
+
+        all_vacancies: list[dict] = []
+
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        }
+        timeout = aiohttp.ClientTimeout(total=60)
+
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            for query in self.search_queries:
+                logger.info(f"[→] «{query}»")
+                results = await self._search_via_ssr(session, query)
+                all_vacancies.extend(results)
+                logger.info(f"    Итого: {len(results)}")
+                await asyncio.sleep(2.0)
 
         unique_vacancies = self.deduplicate(all_vacancies)
         logger.info(f"\n{'─' * 60}")
