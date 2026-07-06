@@ -123,7 +123,7 @@ class Agent:
                 "search_queries": state["search_queries"],
                 "filters": state.get("filters") or {},
                 "area": state.get("area", 1),
-                "max_pages": state.get("max_pages", 3),
+                "max_pages": state.get("max_pages", 1),
                 "csv_path": "",
             }
         )

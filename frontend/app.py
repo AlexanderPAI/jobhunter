@@ -7,18 +7,15 @@ import streamlit as st
 
 CV_ANALYZER_URL = "http://backend:8080/v1/cv_analyzer/send_cv"
 SEARCHER_URL = "http://backend:8080/v1/searcher/chat"
+FILTER_URL = "http://backend:8080/v1/filter/check"
 
 st.set_page_config(page_title="Job Hunter", page_icon="💼", layout="wide")
 
 CSS = """
 <style>
 .block-container { padding-top: 1.8rem; padding-bottom: 1.5rem; max-width: 1200px; }
-h1 {
-    font-size: 1.4rem !important;
-    font-weight: 700 !important;
-    color: #e2e8f0 !important;
-    margin-bottom: 0.1rem !important;
-    }
+h1 { font-size: 1.4rem !important; font-weight: 700 !important;
+color: #e2e8f0 !important; margin-bottom: 0.1rem !important; }
 
 .cards-row {
     display: grid;
@@ -89,12 +86,8 @@ h1 {
     z-index: 1;
     border-bottom: 1px solid #1e3a5f;
 }
-.vacancy-table-wrap td {
-    padding: 7px 12px;
-    border-top: 1px solid #162032;
-    vertical-align: top;
-    word-break: break-word;
-    }
+.vacancy-table-wrap td { padding: 7px 12px; border-top: 1px solid #162032;
+vertical-align: top; word-break: break-word; }
 .vacancy-table-wrap tr:hover td { background: #162032; }
 .vacancy-table-wrap a { color: #60a5fa; text-decoration: none; }
 .vacancy-table-wrap a:hover { color: #93c5fd; text-decoration: underline; }
@@ -146,11 +139,26 @@ async def call_cv_analyzer(file_bytes, filename, content_type):
             return await resp.json()
 
 
-async def call_searcher(search_prompt):
+async def call_searcher(search_prompt: str) -> str:
+    """Возвращает путь к CSV на сервере."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
             SEARCHER_URL,
             json={"message": search_prompt},
+            timeout=aiohttp.ClientTimeout(total=1200),
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Ошибка сервера {resp.status}: {await resp.text()}")
+            data = await resp.json()
+            return data["result_path"]
+
+
+async def call_filter(csv_path: str, user_profile: dict) -> bytes:
+    """Отправляет путь к CSV и профиль, получает отфильтрованный CSV."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            FILTER_URL,
+            json={"csv_path": csv_path, "user_profile": user_profile},
             timeout=aiohttp.ClientTimeout(total=1200),
         ) as resp:
             if resp.status != 200:
@@ -251,17 +259,29 @@ if "api_response" in st.session_state:
     )
 
     if st.button("Подобрать вакансии", type="primary", use_container_width=True):
-        with st.spinner("Ищу вакансии на hh.ru…"):
+        with st.status("Ищу вакансии на hh.ru…", expanded=True) as search_status:
             try:
-                csv_bytes = asyncio.run(call_searcher(search_prompt))
+                st.write("Парсю hh.ru…")
+                csv_path = asyncio.run(call_searcher(search_prompt))
+
+                search_status.update(
+                    label="Проверяю и фильтрую полученный список вакансий…"
+                )
+                st.write("Фильтрую нерелевантные вакансии…")
+                csv_bytes = asyncio.run(call_filter(csv_path, profile))
+
+                search_status.update(label="Готово!", state="complete")
                 st.session_state["csv_bytes"] = csv_bytes
             except aiohttp.ClientConnectorError:
+                search_status.update(label="Ошибка соединения", state="error")
                 st.error("Не удалось подключиться к backend.")
                 st.stop()
             except asyncio.TimeoutError:
+                search_status.update(label="Превышено время ожидания", state="error")
                 st.error("Сервер не ответил за 20 минут.")
                 st.stop()
             except RuntimeError as exc:
+                search_status.update(label="Ошибка", state="error")
                 st.error(str(exc))
                 st.stop()
 
