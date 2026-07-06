@@ -7,12 +7,12 @@ HH.ru Vacancy Filter Agent
 
 Флоу:
   1. load_data        -- читает CSV с вакансиями и профиль пользователя
-  2. filter_vacancies -- LLM анализирует названия вакансий батчами
+  2. filter_vacancies -- LLM анализирует вакансии батчами
                          и решает, релевантна ли каждая профилю
   3. save_result      -- сохраняет отфильтрованный CSV через tool
 
-Агент не трогает содержимое вакансий -- только фильтрует строки по
-полю title на основе профиля кандидата.
+Агент фильтрует строки CSV на основе профиля кандидата и доступного
+контекста вакансии: title, company, query, experience, schedule.
 """
 
 import asyncio
@@ -38,8 +38,21 @@ filter_system_prompt = load_prompt(
     Path(__file__).parent / "prompts/base.yaml", "filter_system"
 )
 
-# Сколько названий вакансий отправляем LLM за один запрос.
+# Сколько вакансий отправляем LLM за один запрос.
 BATCH_SIZE = 30
+
+
+def _format_vacancy_for_prompt(row: dict) -> str:
+    """Возвращает компактное описание строки CSV для LLM-фильтра."""
+    fields = [
+        ("Название", row.get("title", "")),
+        ("Компания", row.get("company", "")),
+        ("Найдено по запросу", row.get("query", "")),
+        ("Опыт", row.get("experience", "")),
+        ("График", row.get("schedule", "")),
+    ]
+    return "; ".join(f"{label}: {value}" for label, value in fields if value)
+
 
 # ---- State ------------------------------------------------------------------
 
@@ -83,18 +96,16 @@ class VacancyFilterAgent:
         profile = state["user_profile"]
         profile_json = json.dumps(profile, ensure_ascii=False)
 
-        # Уникальные названия (порядок сохранён)
-        titles = [row.get("title", "") for row in all_rows]
-        unique_titles = list(dict.fromkeys(titles))
-        logger.info(f"Уникальных названий: {len(unique_titles)}, батч: {BATCH_SIZE}")
+        logger.info(f"Вакансий для фильтрации: {len(all_rows)}, батч: {BATCH_SIZE}")
 
-        relevant_titles: set[str] = set()
+        relevant_row_indices: set[int] = set()
 
-        for batch_start in range(0, len(unique_titles), BATCH_SIZE):
+        for batch_start in range(0, len(all_rows), BATCH_SIZE):
             # fmt: off
-            batch = unique_titles[batch_start: batch_start + BATCH_SIZE]
+            batch = all_rows[batch_start: batch_start + BATCH_SIZE]
             numbered = "\n".join(
-                f"{idx + 1}. {title}" for idx, title in enumerate(batch)
+                f"{idx + 1}. {_format_vacancy_for_prompt(row)}"
+                for idx, row in enumerate(batch)
             )
             # fmt: on
 
@@ -104,7 +115,7 @@ class VacancyFilterAgent:
                     "role": "user",
                     "content": (
                         f"Профиль кандидата:\n{profile_json}\n\n"
-                        f"Список названий вакансий:\n{numbered}"
+                        f"Список вакансий:\n{numbered}"
                     ),
                 },
             ]
@@ -123,7 +134,7 @@ class VacancyFilterAgent:
 
             for idx in relevant_indices:
                 if isinstance(idx, int) and 1 <= idx <= len(batch):
-                    relevant_titles.add(batch[idx - 1])
+                    relevant_row_indices.add(batch_start + idx - 1)
 
             logger.info(
                 f"Батч {batch_start // BATCH_SIZE + 1}: "
@@ -131,7 +142,7 @@ class VacancyFilterAgent:
             )
 
         filtered_rows = [
-            row for row in all_rows if row.get("title", "") in relevant_titles
+            row for idx, row in enumerate(all_rows) if idx in relevant_row_indices
         ]
         logger.info(f"Итого: {len(filtered_rows)} / {len(all_rows)}")
 
@@ -155,7 +166,13 @@ class VacancyFilterAgent:
         )
 
         save_filtered_csv.invoke(
-            {"rows": state["filtered_rows"], "output_path": output_path}
+            {
+                "rows": state["filtered_rows"],
+                "output_path": output_path,
+                "fieldnames": (
+                    list(state["all_rows"][0].keys()) if state["all_rows"] else None
+                ),
+            }
         )
 
         return {
