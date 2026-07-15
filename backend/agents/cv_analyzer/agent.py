@@ -26,7 +26,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agents.cv_analyzer.tools import extract_cv_text
 from backend.config import cfg
-from backend.models.openrouter import OpenRouterAdapter
+from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("CV_ANALYZER")

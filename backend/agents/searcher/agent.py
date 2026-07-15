@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agents.searcher.tools import parse_habr_vacancies, parse_vacancies
 from backend.config import cfg
-from backend.models.openrouter import OpenRouterAdapter
+from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("SEARCHER")

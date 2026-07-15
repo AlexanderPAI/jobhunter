@@ -29,7 +29,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agents.vacancy_filter.tools import save_filtered_csv
 from backend.config import cfg
-from backend.models.openrouter import OpenRouterAdapter
+from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("VACANCY_FILTER")
