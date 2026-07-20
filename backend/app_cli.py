@@ -24,7 +24,8 @@ async def main():
             "filters": None,
             "area": 1,
             "max_pages": 3,
-            "csv_path": "",
+            "profile_id": None,
+            "search_id": "",
             "final_answer": "",
         }
     )
