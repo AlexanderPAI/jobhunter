@@ -80,7 +80,10 @@ class CVAnalyzerAgent:
         ]
 
         response = await self.llm.chat(prompt)
-        raw_content = response["choices"][0]["message"]["content"].strip()
+        raw_content = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
 
         try:
             json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
@@ -107,7 +110,10 @@ class CVAnalyzerAgent:
         ]
 
         response = await self.llm.chat(prompt)
-        final_answer = response["choices"][0]["message"]["content"].strip()
+        final_answer = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
 
         logger.info(f"Промпт для searcher-а: {final_answer[:120]}...")
 

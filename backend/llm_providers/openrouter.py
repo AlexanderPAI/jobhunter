@@ -1,9 +1,14 @@
 import asyncio
 import pprint
+from typing import Any
 
 import aiohttp
 
 from backend.config import cfg
+
+
+class LLMProviderError(RuntimeError):
+    """Понятная для API ошибка обращения к LLM-провайдеру."""
 
 
 class OpenRouterAdapter:
@@ -17,20 +22,48 @@ class OpenRouterAdapter:
         self.openrouter_key = openrouter_key
         self.model = model
 
-    async def chat(self, prompt: list[dict[str, str]]) -> str:
+    async def chat(self, prompt: list[dict[str, str]]) -> dict[str, Any]:
         """Send prompt to LLM"""
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url=self.openrouter_url,
-                headers={
-                    "Authorization": f"Bearer {cfg.openrouter_key}",
-                },
-                json={
-                    "model": self.model,
-                    "messages": prompt,
-                },
-            ) as response:
-                return await response.json()
+        timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=240)
+        last_error: Exception | None = None
+
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url=self.openrouter_url,
+                        headers={"Authorization": f"Bearer {self.openrouter_key}"},
+                        json={"model": self.model, "messages": prompt},
+                    ) as response:
+                        payload = await response.json(content_type=None)
+                        if response.status >= 400:
+                            message = payload.get("error", {}).get("message", payload)
+                            raise LLMProviderError(
+                                f"OpenRouter вернул HTTP {response.status}: {message}"
+                            )
+                        choices = payload.get("choices") or []
+                        choice = choices[0] if choices else {}
+                        content = (choice.get("message") or {}).get("content")
+                        if not isinstance(content, str) or not content.strip():
+                            finish_reason = choice.get("finish_reason") or "не указан"
+                            raise LLMProviderError(
+                                "OpenRouter вернул пустой ответ "
+                                f"(finish_reason={finish_reason})"
+                            )
+                        return payload
+            except (
+                TimeoutError,
+                aiohttp.ClientConnectionError,
+                LLMProviderError,
+            ) as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(1)
+
+        detail = str(last_error) if last_error else "неизвестная ошибка"
+        raise LLMProviderError(
+            f"OpenRouter не дал корректный ответ после двух попыток: {detail}"
+        ) from last_error
 
 
 llm = OpenRouterAdapter(

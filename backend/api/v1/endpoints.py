@@ -2,13 +2,18 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
 from backend.agents.searcher.agent import Agent as SearchAgent
 from backend.agents.vacancy_filter.agent import VacancyFilterAgent
 from backend.api.v1.schemes import SearcherRequest, VacancyCheckerRequest
+from backend.db.connector import get_session
+from backend.db.models import CandidateProfile
+from backend.db.repositories import create_profile
+from backend.llm_providers.openrouter import LLMProviderError
 
 router = APIRouter(prefix="/v1")
 
@@ -36,7 +41,7 @@ async def upload_cv(file: UploadFile = File(...)):
             detail=f"Unsupported {file.content_type}. Upload only *.pdf, *.docx, *.doc, *.txt files",
         )
     extension = ALLOWED_TYPES[file.content_type]
-    save_filename = f"{uuid.uuid4()}.{extension}"
+    save_filename = f"{uuid.uuid4()}{extension}"
     file_path = UPLOAD_DIR / save_filename
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -50,56 +55,63 @@ async def upload_cv(file: UploadFile = File(...)):
 
 
 @router.post("/cv_analyzer/send_cv")
-async def cv_analyzer(file: UploadFile = File(...)):
+async def cv_analyzer(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+):
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported {file.content_type}. Upload only *.pdf, *.docx, *.doc, *.txt files",
         )
     extension = ALLOWED_TYPES[file.content_type]
-    save_filename = f"{uuid.uuid4()}.{extension}"
+    save_filename = f"{uuid.uuid4()}{extension}"
     file_path = UPLOAD_DIR / save_filename
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    search_prompt, user_profile, _ = await cv_analyzer_agent.run(str(file_path))
+    try:
+        search_prompt, user_profile, state = await cv_analyzer_agent.run(str(file_path))
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    profile = await create_profile(
+        session,
+        user_profile,
+        source_filename=file.filename,
+        cv_text=state.get("cv_text"),
+    )
 
     return {
         "search_prompt": search_prompt,
         "user_profile": user_profile,
+        "profile_id": str(profile.id),
     }
 
 
 @router.post("/searcher/chat")
 async def searcher_chat(searcher_request: SearcherRequest):
-    result_path = await search_agent.run(searcher_request.message)
-    result_path = Path(result_path)
+    search_id = await search_agent.run(
+        searcher_request.message,
+        str(searcher_request.profile_id) if searcher_request.profile_id else None,
+    )
+    return {"search_id": search_id}
 
-    if not result_path.exists():
-        raise HTTPException(status_code=500, detail="CSV file was not generated")
 
+@router.post("/filter/check")
+async def filter_check(
+    request: VacancyCheckerRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    profile = await session.scalar(
+        select(CandidateProfile)
+        .join(CandidateProfile.searches)
+        .where(CandidateProfile.searches.any(id=request.search_id))
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile for search not found")
+    rows, _ = await vacancy_filter_agent.run(str(request.search_id), profile.raw_data)
     return {
-        "result_path": str(result_path),
+        "search_id": str(request.search_id),
+        "total_count": len(rows),
+        "vacancies": rows,
     }
-    # return FileResponse(
-    #     path=str(result_path),
-    #     media_type="text/csv; charset=utf-8",
-    #     filename=result_path.name,
-    # )
-
-
-@router.post("/filter/check", response_class=FileResponse)
-async def filter_check(request: VacancyCheckerRequest):
-    result_path, _ = await vacancy_filter_agent.run(
-        request.csv_path, request.user_profile
-    )
-    result_path = Path(result_path)
-
-    if not result_path.exists():
-        raise HTTPException(status_code=500, detail="CSV file was not generated")
-
-    return FileResponse(
-        path=str(result_path),
-        media_type="text/csv; charset=utf-8",
-        filename=result_path.name,
-    )

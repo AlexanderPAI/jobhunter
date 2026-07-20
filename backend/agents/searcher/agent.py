@@ -10,16 +10,14 @@ Job Search Agent
 Диалог:
   1. greet       — агент объясняет что умеет и задаёт вопрос
   2. parse_user_input — LLM разбирает ответ в SearchFilters + список запросов
-  3. run_parser  — вызывает tools, сохраняет общий CSV
+  3. run_parser  — вызывает tools, сохраняет общую выдачу в PostgreSQL
   4. done        — отвечает пользователю
 """
 
 import asyncio
-import csv
 import json
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Annotated, List, Optional, TypedDict
 
@@ -29,6 +27,8 @@ from langgraph.graph.message import add_messages
 
 from backend.agents.searcher.tools import parse_habr_vacancies, parse_vacancies
 from backend.config import cfg
+from backend.db.connector import async_session
+from backend.db.repositories import save_search
 from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
@@ -49,7 +49,8 @@ class State(TypedDict):
     filters: Optional[dict]
     area: int
     max_pages: int
-    csv_path: str
+    profile_id: str | None
+    search_id: str
     final_answer: str
 
 
@@ -105,7 +106,10 @@ class Agent:
         ]
 
         response = await self.llm.chat(prompt)
-        raw_content = response["choices"][0]["message"]["content"].strip()
+        raw_content = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
 
         try:
             json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
@@ -130,48 +134,20 @@ class Agent:
         }
 
     @staticmethod
-    def _results_dir() -> Path:
-        results_dir = Path(__file__).parent.parent.parent / "storage/results"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        return results_dir
-
-    @classmethod
-    def _merge_parser_csvs(
-        cls, source_paths: list[str | Path], result_path: Path
-    ) -> int:
-        rows = []
+    def _merge_results(*groups: list[dict]) -> list[dict]:
+        rows: list[dict] = []
         seen_links = set()
-
-        for source_path in source_paths:
-            path = Path(source_path)
-            if not path.exists():
-                logger.warning(f"CSV file does not exist and will be skipped: {path}")
-                continue
-
-            with path.open(newline="", encoding="utf-8-sig") as input_file:
-                reader = csv.DictReader(input_file)
-                for row in reader:
-                    link = row.get("link") or ""
-                    if link in seen_links:
-                        continue
-                    seen_links.add(link)
-                    rows.append({field: row.get(field, "") for field in cls.CSV_FIELDS})
-
-        with result_path.open("w", newline="", encoding="utf-8-sig") as output_file:
-            writer = csv.DictWriter(output_file, fieldnames=cls.CSV_FIELDS)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        return len(rows)
+        for group in groups:
+            for row in group:
+                link = row.get("link") or ""
+                if not link or link in seen_links:
+                    continue
+                seen_links.add(link)
+                rows.append(row)
+        return rows
 
     # Нода 3: запукаем тулу парсера
     async def run_parser_node(self, state: State) -> dict:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_dir = self._results_dir()
-        hh_csv_path = results_dir / f"hh_vacancies_{timestamp}.csv"
-        habr_csv_path = results_dir / f"habr_vacancies_{timestamp}.csv"
-        result_csv_path = results_dir / f"vacancies_{timestamp}.csv"
-
         parser_payload = {
             "search_queries": state["search_queries"],
             "filters": state.get("filters") or {},
@@ -180,34 +156,33 @@ class Agent:
         }
 
         hh_result, habr_result = await asyncio.gather(
-            parse_vacancies.ainvoke(
-                {
-                    **parser_payload,
-                    "csv_path": str(hh_csv_path),
-                }
-            ),
-            parse_habr_vacancies.ainvoke(
-                {
-                    **parser_payload,
-                    "csv_path": str(habr_csv_path),
-                }
-            ),
+            parse_vacancies.ainvoke(parser_payload),
+            parse_habr_vacancies.ainvoke(parser_payload),
         )
-
-        total_count = self._merge_parser_csvs(
-            [hh_result["csv_path"], habr_result["csv_path"]],
-            result_csv_path,
+        rows = self._merge_results(hh_result["vacancies"], habr_result["vacancies"])
+        original_prompt = next(
+            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), ""
         )
+        async with async_session() as session:
+            search = await save_search(
+                session,
+                profile_id=state.get("profile_id"),
+                prompt=original_prompt,
+                queries=state["search_queries"],
+                filters=state.get("filters") or {},
+                area=state.get("area", 1),
+                max_pages=state.get("max_pages", 1),
+                rows=rows,
+            )
 
         return {
-            "csv_path": str(result_csv_path),
+            "search_id": str(search.id),
             "messages": [
                 AIMessage(
                     content=(
-                        f"Парсинг завершён: {total_count} вакансий. "
+                        f"Парсинг завершён: {len(rows)} вакансий. "
                         f"HH: {hh_result['total_count']}, "
-                        f"Habr: {habr_result['total_count']}. "
-                        f"Файл: {result_csv_path}"
+                        f"Habr: {habr_result['total_count']}."
                     )
                 )
             ],
@@ -215,7 +190,7 @@ class Agent:
 
     # Нода 4: делаем ответ для пользователя
     async def done(self, state: State) -> dict:
-        answer = f"Результат сохранён в {state['csv_path']}"
+        answer = f"Результат сохранён, поиск {state['search_id']}"
         return {
             "final_answer": answer,
             "messages": [AIMessage(content=answer)],
@@ -262,7 +237,7 @@ class Agent:
 
         return workflow.compile()
 
-    async def run(self, message: str) -> str:
+    async def run(self, message: str, profile_id: str | None = None) -> str:
         initial_state: State = {
             "messages": [HumanMessage(content=message)],
             "greeted": True,
@@ -271,51 +246,26 @@ class Agent:
             "filters": None,
             "area": 1,
             "max_pages": 3,
-            "csv_path": "",
+            "profile_id": profile_id,
+            "search_id": "",
             "final_answer": "",
         }
 
         result_state = await self.graph.ainvoke(initial_state)
 
-        csv_path = result_state.get("csv_path", "")
-        if not csv_path:
-            raise RuntimeError("Parser did not return csv_path")
-
-        if not Path(csv_path).exists():
-            raise RuntimeError(f"CSV file does not exist: {csv_path}")
-
-        return csv_path
+        search_id = result_state.get("search_id", "")
+        if not search_id:
+            raise RuntimeError("Parser did not return search_id")
+        return search_id
 
 
 async def _main():
     agent = Agent()
-
-    initial_state: State = {
-        "messages": [],
-        "greeted": False,
-        "waiting_for_user": False,
-        "search_queries": [],
-        "filters": None,
-        "area": 1,
-        "max_pages": 3,
-        "csv_path": "",
-        "final_answer": "",
-    }
-
-    greeting, after_greet_state = await agent.run(initial_state)
-    print(f"\nАгент:\n{greeting}\n")
-
     user_input = input("Вы: ").strip()
     if not user_input:
         return
-
-    after_greet_state["messages"] = list(after_greet_state["messages"]) + [
-        HumanMessage(content=user_input)
-    ]
-    after_greet_state["greeted"] = True
-
-    answer, _ = await agent.run(after_greet_state)
-    print(f"\nАгент: {answer}")
+    search_id = await agent.run(user_input)
+    print(f"\nПоиск сохранён: {search_id}")
 
 
 if __name__ == "__main__":

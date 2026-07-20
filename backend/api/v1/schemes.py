@@ -1,12 +1,12 @@
-from typing import Any, Dict
+import uuid
 
 from pydantic import BaseModel, Field
 
 
 class SearcherRequest(BaseModel):
     message: str = Field(..., description="Сообщение для AgentSearcher")
+    profile_id: uuid.UUID | None = Field(None, description="Идентификатор профиля")
 
 
 class VacancyCheckerRequest(BaseModel):
-    csv_path: str = Field(..., description="Путь к csv-списку")
-    user_profile: Dict[str, Any] = Field(..., description="Провиль пользователя")
+    search_id: uuid.UUID = Field(..., description="Идентификатор поиска")

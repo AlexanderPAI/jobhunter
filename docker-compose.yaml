@@ -11,6 +11,9 @@ services:
       - ./backend/storage:/app/backend/storage:rw
     env_file:
       - .env
+    depends_on:
+      db:
+        condition: service_healthy
 
   db:
     container_name: hunter_ps
@@ -27,6 +30,11 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_DB: ${POSTGRES_DB}
     restart: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   frontend:
     container_name: frontend
