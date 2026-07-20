@@ -105,7 +105,7 @@ st.markdown(
 
 with st.sidebar:
     st.page_link("app.py", label="Новый подбор", icon="📄")
-    st.page_link("pages/1_Профили.py", label="Профили", icon="👥")
+    st.page_link("pages/profiles.py", label="Профили", icon="👥")
 
 
 def format_datetime(value: datetime | None) -> str:
@@ -166,12 +166,12 @@ def render_vacancy_table(dataframe: pd.DataFrame) -> str:
 
 
 if st.button("← Все профили"):
-    st.switch_page("pages/1_Профили.py")
+    st.switch_page("pages/profiles.py")
 
 profile_id = st.session_state.get("selected_profile_id")
 if not profile_id:
     st.info("Сначала выберите профиль в списке.")
-    st.page_link("pages/1_Профили.py", label="Открыть профили", icon="👥")
+    st.page_link("pages/profiles.py", label="Открыть профили", icon="👥")
     st.stop()
 
 try:

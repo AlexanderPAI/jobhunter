@@ -32,7 +32,7 @@ st.markdown(
 
 with st.sidebar:
     st.page_link("app.py", label="Новый подбор", icon="📄")
-    st.page_link("pages/1_Профили.py", label="Профили", icon="👥")
+    st.page_link("pages/profiles.py", label="Профили", icon="👥")
 
 
 def short_summary(value: str | None) -> str:
@@ -93,4 +93,4 @@ for profile in profiles:
                 type="primary",
             ):
                 st.session_state["selected_profile_id"] = str(profile["id"])
-                st.switch_page("pages/2_Профиль.py")
+                st.switch_page("pages/profile.py")

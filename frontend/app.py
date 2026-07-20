@@ -378,7 +378,7 @@ def render_vacancy_table(dataframe):
 
 with st.sidebar:
     st.page_link("app.py", label="Новый подбор", icon="📄")
-    st.page_link("pages/1_Профили.py", label="Профили", icon="👥")
+    st.page_link("pages/profiles.py", label="Профили", icon="👥")
 
 st.markdown(CSS, unsafe_allow_html=True)
 st.markdown(
