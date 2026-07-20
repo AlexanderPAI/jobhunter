@@ -12,13 +12,13 @@ async def get_profiles() -> list[dict[str, Any]]:
         SELECT
             p.id, p.name, p.summary, p.target_positions, p.experience_level,
             p.location, p.created_at,
-            latest.id AS latest_search_id,
+            latest.id AS latest_search_id, latest.queries AS latest_queries,
             latest.created_at AS last_search_at,
             latest.relevant_count,
             latest.total_found
         FROM candidate_profiles AS p
         LEFT JOIN LATERAL (
-            SELECT id, created_at, relevant_count, total_found
+            SELECT id, queries, created_at, relevant_count, total_found
             FROM search_runs
             WHERE profile_id = p.id
             ORDER BY created_at DESC

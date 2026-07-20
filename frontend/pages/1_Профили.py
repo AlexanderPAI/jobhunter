@@ -1,13 +1,9 @@
 import asyncio
 import html
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from frontend.db import get_profiles
-
-MOSCOW = ZoneInfo("Europe/Moscow")
 
 st.set_page_config(page_title="Профили — Job Hunter", page_icon="👤", layout="wide")
 
@@ -22,10 +18,13 @@ st.markdown(
         box-shadow: 0 12px 28px rgba(37,99,235,.06); border-radius: 10px;
     }
     .profile-name { font-size: 1.25rem; font-weight: 800; color: #172033; }
-    .profile-meta { color: #617085; font-size: .86rem; }
+    .profile-positions { color: #2563eb; font-size: .88rem; font-weight: 650; margin-top: .25rem; }
     .profile-summary { color: #39465a; line-height: 1.55; margin-top: .55rem; }
     .stButton > button { border-radius: 8px; font-weight: 700; }
     [data-testid="stSidebarNav"] { display: none !important; }
+    [data-testid="stToolbar"] { display: none !important; }
+    [data-testid="stDecoration"] { display: none !important; }
+    [data-testid="stStatusWidget"] { display: none !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -36,10 +35,10 @@ with st.sidebar:
     st.page_link("pages/1_Профили.py", label="Профили", icon="👥")
 
 
-def format_datetime(value: datetime | None) -> str:
-    if value is None:
-        return "Подборов ещё не было"
-    return value.astimezone(MOSCOW).strftime("%d.%m.%Y в %H:%M")
+def short_summary(value: str | None) -> str:
+    words = (value or "").split()
+    summary = " ".join(words[:20])
+    return f"{summary}…" if len(words) > 20 else summary
 
 
 st.markdown(
@@ -66,32 +65,26 @@ for profile in profiles:
         main, action = st.columns([5, 1.2], vertical_alignment="center")
         with main:
             name = html.escape(profile.get("name") or "Без имени")
-            positions = html.escape(", ".join(profile.get("target_positions") or []))
-            meta = " · ".join(
-                item
-                for item in [
-                    positions,
-                    html.escape(profile.get("experience_level") or ""),
-                    html.escape(profile.get("location") or ""),
-                ]
-                if item
+            positions = html.escape(
+                ", ".join(
+                    profile.get("latest_queries")
+                    or profile.get("target_positions")
+                    or []
+                )
             )
             st.markdown(
                 f'<div class="profile-name">{name}</div>', unsafe_allow_html=True
             )
-            if meta:
+            if positions:
                 st.markdown(
-                    f'<div class="profile-meta">{meta}</div>', unsafe_allow_html=True
+                    f'<div class="profile-positions">{positions}</div>',
+                    unsafe_allow_html=True,
                 )
             if profile.get("summary"):
                 st.markdown(
-                    f'<div class="profile-summary">{html.escape(profile["summary"])}</div>',
+                    f'<div class="profile-summary">{html.escape(short_summary(profile["summary"]))}</div>',
                     unsafe_allow_html=True,
                 )
-            last_search = format_datetime(profile.get("last_search_at"))
-            relevant = profile.get("relevant_count")
-            result_note = f" · {relevant} подходящих" if relevant is not None else ""
-            st.caption(f"Последний подбор: {last_search}{result_note}")
         with action:
             if st.button(
                 "Открыть",
