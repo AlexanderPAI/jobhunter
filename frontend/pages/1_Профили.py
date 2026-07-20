@@ -19,7 +19,7 @@ st.markdown(
     }
     .profile-name { font-size: 1.25rem; font-weight: 800; color: #172033; }
     .profile-positions { color: #2563eb; font-size: .88rem; font-weight: 650; margin-top: .25rem; }
-    .profile-summary { color: #39465a; line-height: 1.55; margin-top: .55rem; }
+    .profile-summary { color: #39465a; font-size: .88rem; line-height: 1.55; margin: .55rem 0 .4rem; }
     .stButton > button { border-radius: 8px; font-weight: 700; }
     [data-testid="stSidebarNav"] { display: none !important; }
     [data-testid="stToolbar"] { display: none !important; }
