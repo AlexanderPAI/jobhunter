@@ -260,6 +260,7 @@ CSS = """
 [data-testid="stToolbar"] { display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stStatusWidget"] { display: none !important; }
+[data-testid="stSidebarNav"] { display: none !important; }
 header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """
@@ -374,6 +375,10 @@ def render_vacancy_table(dataframe):
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.page_link("app.py", label="Новый подбор", icon="📄")
+    st.page_link("pages/1_Профили.py", label="Профили", icon="👥")
 
 st.markdown(CSS, unsafe_allow_html=True)
 st.markdown(

@@ -12,6 +12,8 @@ COPY poetry.lock pyproject.toml ./
 RUN pip install poetry==2.4.1
 RUN poetry config virtualenvs.create false && poetry install --no-root
 
+ENV PYTHONPATH=/app
+
 FROM base AS proj
 
 COPY /frontend ./frontend
