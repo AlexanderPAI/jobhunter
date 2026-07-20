@@ -11,6 +11,30 @@ services:
       - ./backend/storage:/app/backend/storage:rw
     env_file:
       - .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    container_name: hunter_ps
+    image: postgres:17
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:rw
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+    restart: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   frontend:
     container_name: frontend
@@ -19,3 +43,6 @@ services:
       dockerfile: frontend/Dockerfile
     ports:
       - "8501:8501"
+
+volumes:
+  postgres_data:

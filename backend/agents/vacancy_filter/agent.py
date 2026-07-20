@@ -6,17 +6,16 @@ HH.ru Vacancy Filter Agent
   load_data  ->  filter_vacancies  ->  save_result  ->  END
 
 Флоу:
-  1. load_data        -- читает CSV с вакансиями и профиль пользователя
+  1. load_data        -- читает выдачу из PostgreSQL и профиль пользователя
   2. filter_vacancies -- LLM анализирует вакансии батчами
                          и решает, релевантна ли каждая профилю
-  3. save_result      -- сохраняет отфильтрованный CSV через tool
+  3. save_result      -- сохраняет решение фильтра в PostgreSQL
 
-Агент фильтрует строки CSV на основе профиля кандидата и доступного
+Агент фильтрует вакансии на основе профиля кандидата и доступного
 контекста вакансии: title, company, query, experience, schedule.
 """
 
 import asyncio
-import csv
 import json
 import logging
 import re
@@ -27,9 +26,10 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from backend.agents.vacancy_filter.tools import save_filtered_csv
 from backend.config import cfg
-from backend.models.openrouter import OpenRouterAdapter
+from backend.db.connector import async_session
+from backend.db.repositories import get_search_rows, mark_relevant
+from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("VACANCY_FILTER")
@@ -43,7 +43,7 @@ BATCH_SIZE = 30
 
 
 def _format_vacancy_for_prompt(row: dict) -> str:
-    """Возвращает компактное описание строки CSV для LLM-фильтра."""
+    """Возвращает компактное описание вакансии для LLM-фильтра."""
     fields = [
         ("Название", row.get("title", "")),
         ("Компания", row.get("company", "")),
@@ -59,11 +59,11 @@ def _format_vacancy_for_prompt(row: dict) -> str:
 
 class State(TypedDict):
     messages: Annotated[List, add_messages]
-    csv_path: str
+    search_id: str
     user_profile: dict
     all_rows: list[dict]
     filtered_rows: list[dict]
-    output_csv_path: str
+    result_rows: list[dict]
 
 
 # ---- Agent ------------------------------------------------------------------
@@ -78,12 +78,11 @@ class VacancyFilterAgent:
         )
         self.graph = self._build_graph()
 
-    # Нода 1: загружаем CSV
+    # Нода 1: загружаем выдачу из PostgreSQL
     async def load_data(self, state: State) -> dict:
-        with open(state["csv_path"], encoding="utf-8-sig") as csv_file:
-            all_rows = list(csv.DictReader(csv_file))
-
-        logger.info(f"Загружено {len(all_rows)} вакансий из {state['csv_path']}")
+        async with async_session() as session:
+            _, all_rows = await get_search_rows(session, state["search_id"])
+        logger.info(f"Загружено {len(all_rows)} вакансий поиска {state['search_id']}")
 
         return {
             "all_rows": all_rows,
@@ -123,8 +122,8 @@ class VacancyFilterAgent:
             response = await self.llm.chat(prompt)
 
             raw_content = (
-                (response.get("choices") or [{}])[0].get("message", {}).get("content")
-            )
+                (response.get("choices") or [{}])[0].get("message") or {}
+            ).get("content") or ""
 
             try:
                 match = re.search(r"\[.*?\]", raw_content, re.DOTALL)
@@ -158,26 +157,19 @@ class VacancyFilterAgent:
             ],
         }
 
-    # Нода 3: сохраняем через tool
+    # Нода 3: сохраняем решение фильтра в PostgreSQL
     async def save_result(self, state: State) -> dict:
-        source_path = Path(state["csv_path"])
-        output_path = str(
-            source_path.parent / f"{source_path.stem}_filtered{source_path.suffix}"
-        )
-
-        save_filtered_csv.invoke(
-            {
-                "rows": state["filtered_rows"],
-                "output_path": output_path,
-                "fieldnames": (
-                    list(state["all_rows"][0].keys()) if state["all_rows"] else None
-                ),
+        relevant_links = {row["link"] for row in state["filtered_rows"]}
+        async with async_session() as session:
+            search, rows = await get_search_rows(session, state["search_id"])
+            positions = {
+                index for index, row in enumerate(rows) if row["link"] in relevant_links
             }
-        )
+            await mark_relevant(session, search, positions)
 
         return {
-            "output_csv_path": output_path,
-            "messages": [AIMessage(content=f"Результат сохранён в {output_path}")],
+            "result_rows": state["filtered_rows"],
+            "messages": [AIMessage(content="Результат фильтрации сохранён.")],
         }
 
     # Сборка графа
@@ -195,26 +187,26 @@ class VacancyFilterAgent:
 
         return workflow.compile()
 
-    async def run(self, csv_path: str, user_profile: dict) -> tuple[str, State]:
+    async def run(self, search_id: str, user_profile: dict) -> tuple[list[dict], State]:
         """
         Args:
-            csv_path    : путь к CSV от searcher-а
+            search_id   : идентификатор поиска в PostgreSQL
             user_profile: профиль кандидата от cv_analyzer-а
 
         Returns:
-            (путь к отфильтрованному CSV, итоговый state)
+            (отфильтрованные вакансии, итоговый state)
         """
         initial_state: State = {
             "messages": [],
-            "csv_path": csv_path,
+            "search_id": search_id,
             "user_profile": user_profile,
             "all_rows": [],
             "filtered_rows": [],
-            "output_csv_path": "",
+            "result_rows": [],
         }
 
         result_state = await self.graph.ainvoke(initial_state)
-        return result_state.get("output_csv_path", ""), result_state
+        return result_state.get("result_rows", []), result_state
 
 
 # ---- CLI --------------------------------------------------------------------
@@ -224,15 +216,17 @@ async def _main():
     import sys
 
     if len(sys.argv) < 3:
-        print("Использование: python vacancy_filter_agent.py <csv_path> <profile.json>")
+        print(
+            "Использование: python vacancy_filter_agent.py <search_id> <profile.json>"
+        )
         return
 
     with open(sys.argv[2], encoding="utf-8") as profile_file:
         user_profile = json.load(profile_file)
 
     agent = VacancyFilterAgent()
-    output_path, _ = await agent.run(sys.argv[1], user_profile)
-    print(f"\nОтфильтрованный CSV: {output_path}")
+    rows, _ = await agent.run(sys.argv[1], user_profile)
+    print(f"\nПодходящих вакансий: {len(rows)}")
 
 
 if __name__ == "__main__":

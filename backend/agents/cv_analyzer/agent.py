@@ -26,7 +26,7 @@ from langgraph.graph.message import add_messages
 
 from backend.agents.cv_analyzer.tools import extract_cv_text
 from backend.config import cfg
-from backend.models.openrouter import OpenRouterAdapter
+from backend.llm_providers.openrouter import OpenRouterAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("CV_ANALYZER")
@@ -80,7 +80,10 @@ class CVAnalyzerAgent:
         ]
 
         response = await self.llm.chat(prompt)
-        raw_content = response["choices"][0]["message"]["content"].strip()
+        raw_content = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
 
         try:
             json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
@@ -107,7 +110,10 @@ class CVAnalyzerAgent:
         ]
 
         response = await self.llm.chat(prompt)
-        final_answer = response["choices"][0]["message"]["content"].strip()
+        final_answer = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
 
         logger.info(f"Промпт для searcher-а: {final_answer[:120]}...")
 

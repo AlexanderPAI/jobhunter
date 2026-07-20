@@ -87,6 +87,12 @@ docker compose up --build
 - Frontend: `http://localhost:8501`
 - Backend: `http://localhost:8080`
 
+## Миграции
+```commandline
+alembic -c backend/alembic.ini revision -m "test_migr" --autogenerate
+alembic -c backend/alembic.ini upgrade head
+```
+
 ## API
 
 ### Анализ резюме

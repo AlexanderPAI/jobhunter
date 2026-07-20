@@ -1,5 +1,4 @@
 import asyncio
-import io
 
 import aiohttp
 import pandas as pd
@@ -304,31 +303,31 @@ async def call_cv_analyzer(file_bytes, filename, content_type):
             return await resp.json()
 
 
-async def call_searcher(search_prompt: str) -> str:
-    """Возвращает путь к CSV на сервере."""
+async def call_searcher(search_prompt: str, profile_id: str) -> str:
+    """Возвращает идентификатор сохранённого поиска."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
             SEARCHER_URL,
-            json={"message": search_prompt},
+            json={"message": search_prompt, "profile_id": profile_id},
             timeout=aiohttp.ClientTimeout(total=1200),
         ) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"Ошибка сервера {resp.status}: {await resp.text()}")
             data = await resp.json()
-            return data["result_path"]
+            return data["search_id"]
 
 
-async def call_filter(csv_path: str, user_profile: dict) -> bytes:
-    """Отправляет путь к CSV и профиль, получает отфильтрованный CSV."""
+async def call_filter(search_id: str) -> list[dict]:
+    """Фильтрует сохранённый поиск и возвращает вакансии."""
     async with aiohttp.ClientSession() as session:
         async with session.post(
             FILTER_URL,
-            json={"csv_path": csv_path, "user_profile": user_profile},
+            json={"search_id": search_id},
             timeout=aiohttp.ClientTimeout(total=1200),
         ) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"Ошибка сервера {resp.status}: {await resp.text()}")
-            return await resp.read()
+            return (await resp.json())["vacancies"]
 
 
 def render_profile_card(profile):
@@ -411,7 +410,7 @@ if uploaded_file is not None:
                     )
                 )
                 st.session_state["api_response"] = api_response
-                st.session_state["csv_bytes"] = None
+                st.session_state["vacancies"] = None
             except aiohttp.ClientConnectorError:
                 st.error("Не удалось подключиться к backend.")
                 st.stop()
@@ -427,6 +426,7 @@ if "api_response" in st.session_state:
     profile = api_response.get("user_profile", {})
     summary = profile.get("summary", "—")
     search_prompt = api_response.get("search_prompt", "—")
+    profile_id = api_response.get("profile_id")
 
     st.markdown(
         f'<div class="cards-row">'
@@ -442,14 +442,14 @@ if "api_response" in st.session_state:
             status_text = st.empty()
             try:
                 status_text.write("Ищу вакансии на hh.ru и Хабр Карьере…")
-                csv_path = asyncio.run(call_searcher(search_prompt))
+                search_id = asyncio.run(call_searcher(search_prompt, profile_id))
 
                 status_text.write("Проверяю и фильтрую полученный список вакансий…")
-                csv_bytes = asyncio.run(call_filter(csv_path, profile))
+                vacancies = asyncio.run(call_filter(search_id))
 
                 status_text.write("Готово! Подходящие вакансии собраны.")
                 search_status.update(label="Статус", state="complete")
-                st.session_state["csv_bytes"] = csv_bytes
+                st.session_state["vacancies"] = vacancies
             except aiohttp.ClientConnectorError:
                 status_text.write("Ошибка соединения.")
                 search_status.update(label="Статус", state="error")
@@ -466,15 +466,14 @@ if "api_response" in st.session_state:
                 st.error(str(exc))
                 st.stop()
 
-if st.session_state.get("csv_bytes"):
-    csv_bytes = st.session_state["csv_bytes"]
-    dataframe = pd.read_csv(io.BytesIO(csv_bytes), encoding="utf-8-sig")
+if st.session_state.get("vacancies") is not None:
+    dataframe = pd.DataFrame(st.session_state["vacancies"])
     with st.expander(f"Вакансии — {len(dataframe)} результатов", expanded=True):
         st.markdown(render_vacancy_table(dataframe), unsafe_allow_html=True)
         st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
         st.download_button(
             label="Скачать CSV",
-            data=csv_bytes,
+            data=dataframe.to_csv(index=False).encode("utf-8-sig"),
             file_name="vacancies.csv",
             mime="text/csv",
         )

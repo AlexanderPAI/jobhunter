@@ -18,4 +18,4 @@ FROM base AS proj
 
 COPY /backend ./backend
 
-CMD ["python3", "-m", "backend.app"]
+CMD ["sh", "backend/entrypoint.sh"]
