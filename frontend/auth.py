@@ -18,12 +18,12 @@ def logout() -> None:
 
 
 def require_auth() -> None:
-    if st.session_state.get("access_token"):
-        return
     st.markdown(
         """
         <style>
-        [data-testid="stToolbar"],
+        [data-testid="stAppDeployButton"],
+        [data-testid="stMainMenu"],
+        #MainMenu,
         [data-testid="stDecoration"],
         [data-testid="stStatusWidget"],
         [data-testid="stSidebarNav"] {
@@ -32,10 +32,16 @@ def require_auth() -> None:
         header[data-testid="stHeader"] {
             background: transparent !important;
         }
+        [data-testid="stSidebarCollapsedControl"] {
+            display: flex !important;
+            visibility: visible !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+    if st.session_state.get("access_token"):
+        return
     st.markdown("## Job Hunter")
     st.caption("Войдите, чтобы продолжить")
     with st.form("login_form"):

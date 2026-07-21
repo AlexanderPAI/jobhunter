@@ -24,9 +24,13 @@ st.markdown(
     .profile-summary { color: #39465a; font-size: .88rem; line-height: 1.55; margin: .55rem 0 .4rem; }
     .stButton > button { border-radius: 8px; font-weight: 700; }
     [data-testid="stSidebarNav"] { display: none !important; }
-    [data-testid="stToolbar"] { display: none !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    [data-testid="stMainMenu"], #MainMenu { display: none !important; }
     [data-testid="stDecoration"] { display: none !important; }
     [data-testid="stStatusWidget"] { display: none !important; }
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important; visibility: visible !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,

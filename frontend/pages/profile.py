@@ -95,8 +95,12 @@ st.markdown(
         min-height: 2.7rem; font-weight: 750 !important; }
     [data-testid="stExpander"] { border: 1px solid var(--jh-line) !important;
         border-radius: 8px !important; background: rgba(255,255,255,.72) !important; }
-    [data-testid="stSidebarNav"], [data-testid="stToolbar"],
+    [data-testid="stSidebarNav"], [data-testid="stAppDeployButton"],
+    [data-testid="stMainMenu"], #MainMenu,
     [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display: none !important; }
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important; visibility: visible !important;
+    }
     @media (max-width: 900px) { .jh-header { grid-template-columns: 1fr; }
         .jh-badge { justify-self: start; } }
     </style>

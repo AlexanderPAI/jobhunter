@@ -261,11 +261,16 @@ CSS = """
 }
 
 /* скрываем встроенные кнопки Deploy / Stop */
-[data-testid="stToolbar"] { display: none !important; }
+[data-testid="stAppDeployButton"] { display: none !important; }
+[data-testid="stMainMenu"], #MainMenu { display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stStatusWidget"] { display: none !important; }
 [data-testid="stSidebarNav"] { display: none !important; }
 header[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+}
 </style>
 """
 
