@@ -1,8 +1,13 @@
+from typing import Literal
+
 from pydantic import Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    llm_provider: Literal["gigachat", "openrouter"] = Field(
+        "gigachat", env="LLM_PROVIDER", description="Default LLM provider"
+    )
     openrouter_key: str = Field(
         ..., env="OPENROUTER_KEY", description="OpenRouter API key"
     )
@@ -38,6 +43,11 @@ class Settings(BaseSettings):
     )
     jwt_secret: str = Field(..., min_length=32, env="JWT_SECRET")
     jwt_expire_minutes: int = Field(480, env="JWT_EXPIRE_MINUTES")
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def normalize_llm_provider(cls, value: str) -> str:
+        return str(value).strip().lower()
 
     @field_validator("openrouter_key", "gigachat_key", "jwt_secret", mode="before")
     @classmethod
