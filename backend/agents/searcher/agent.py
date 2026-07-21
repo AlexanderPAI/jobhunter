@@ -50,6 +50,7 @@ class State(TypedDict):
     area: int
     max_pages: int
     profile_id: str | None
+    user_id: str
     search_id: str
     final_answer: str
 
@@ -167,6 +168,7 @@ class Agent:
             search = await save_search(
                 session,
                 profile_id=state.get("profile_id"),
+                user_id=state["user_id"],
                 prompt=original_prompt,
                 queries=state["search_queries"],
                 filters=state.get("filters") or {},
@@ -237,7 +239,7 @@ class Agent:
 
         return workflow.compile()
 
-    async def run(self, message: str, profile_id: str | None = None) -> str:
+    async def run(self, message: str, profile_id: str | None, user_id: str) -> str:
         initial_state: State = {
             "messages": [HumanMessage(content=message)],
             "greeted": True,
@@ -247,6 +249,7 @@ class Agent:
             "area": 1,
             "max_pages": 3,
             "profile_id": profile_id,
+            "user_id": user_id,
             "search_id": "",
             "final_answer": "",
         }

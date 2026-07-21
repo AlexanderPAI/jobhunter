@@ -2,10 +2,14 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.api.v1.auth import router as auth_router
 from backend.api.v1.endpoints import router
+from backend.api.v1.history import router as history_router
 from backend.llm_providers.openrouter import LLMProviderError
 
 app = FastAPI()
+app.include_router(auth_router)
+app.include_router(history_router)
 app.include_router(router)
 
 

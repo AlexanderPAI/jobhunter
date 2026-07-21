@@ -1,4 +1,4 @@
-from pydantic import Field, PostgresDsn
+from pydantic import Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,17 @@ class Settings(BaseSettings):
     postgres_db: str = Field(
         ..., env="POSTGRES_DB", description="Postgres database name"
     )
+    jwt_secret: str = Field(..., min_length=32, env="JWT_SECRET")
+    jwt_expire_minutes: int = Field(480, env="JWT_EXPIRE_MINUTES")
+
+    @field_validator("openrouter_key", "jwt_secret", mode="before")
+    @classmethod
+    def strip_secret_quotes(cls, value: str) -> str:
+        """Docker env files may preserve quotes as part of a secret value."""
+        value = str(value).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1].strip()
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

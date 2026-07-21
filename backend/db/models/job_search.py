@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Boolean,
@@ -18,11 +18,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.models.base import Base
 
+if TYPE_CHECKING:
+    from backend.db.models.user import User
+
 
 class CandidateProfile(Base):
     __tablename__ = "candidate_profiles"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str | None] = mapped_column(String(255))
     target_positions: Mapped[list[str]] = mapped_column(JSONB, default=list)
     skills: Mapped[list[str]] = mapped_column(JSONB, default=list)
@@ -49,12 +55,16 @@ class CandidateProfile(Base):
     searches: Mapped[list["SearchRun"]] = relationship(
         back_populates="profile", cascade="all, delete-orphan"
     )
+    owner: Mapped["User"] = relationship(back_populates="profiles")
 
 
 class SearchRun(Base):
     __tablename__ = "search_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     profile_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("candidate_profiles.id", ondelete="SET NULL"), index=True
     )
@@ -72,6 +82,7 @@ class SearchRun(Base):
     filtered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     profile: Mapped[CandidateProfile | None] = relationship(back_populates="searches")
+    owner: Mapped["User"] = relationship(back_populates="searches")
     results: Mapped[list["SearchResult"]] = relationship(
         back_populates="search_run",
         cascade="all, delete-orphan",

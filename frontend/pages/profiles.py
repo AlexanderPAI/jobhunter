@@ -3,9 +3,11 @@ import html
 
 import streamlit as st
 
-from frontend.db import get_profiles
+from frontend.api import get_profiles
+from frontend.auth import render_account_sidebar, require_auth
 
 st.set_page_config(page_title="Профили — Job Hunter", page_icon="👤", layout="wide")
+require_auth()
 
 st.markdown(
     """
@@ -31,6 +33,7 @@ st.markdown(
 )
 
 with st.sidebar:
+    render_account_sidebar()
     st.page_link("app.py", label="Новый подбор", icon="📄")
     st.page_link("pages/profiles.py", label="Профили", icon="👥")
 

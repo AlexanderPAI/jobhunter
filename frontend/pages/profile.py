@@ -7,8 +7,8 @@ import aiohttp
 import pandas as pd
 import streamlit as st
 
-from frontend.api import repeat_search
-from frontend.db import get_profile, get_search_vacancies
+from frontend.api import get_profile, get_search_vacancies, repeat_search
+from frontend.auth import render_account_sidebar, require_auth
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 
@@ -38,6 +38,7 @@ COL_META = {
 }
 
 st.set_page_config(page_title="Профиль — Job Hunter", page_icon="👤", layout="wide")
+require_auth()
 
 st.markdown(
     """
@@ -104,6 +105,7 @@ st.markdown(
 )
 
 with st.sidebar:
+    render_account_sidebar()
     st.page_link("app.py", label="Новый подбор", icon="📄")
     st.page_link("pages/profiles.py", label="Профили", icon="👥")
 
