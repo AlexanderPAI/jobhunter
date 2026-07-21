@@ -28,6 +28,7 @@ def _profile_data(profile: CandidateProfile) -> dict:
         "languages",
         "education",
         "summary",
+        "search_prompt",
         "source_filename",
         "created_at",
         "updated_at",

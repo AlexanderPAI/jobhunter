@@ -171,6 +171,24 @@ def render_vacancy_table(dataframe: pd.DataFrame) -> str:
     )
 
 
+def fallback_search_prompt(profile: dict) -> str:
+    """Build a usable prompt for profiles created before prompt persistence."""
+    parts = []
+    positions = profile.get("target_positions") or []
+    skills = profile.get("skills") or []
+    if positions:
+        parts.append(f"Ищу вакансии на позиции: {', '.join(positions)}")
+    if skills:
+        parts.append(f"Ключевые навыки: {', '.join(skills)}")
+    if profile.get("experience_level"):
+        parts.append(f"Уровень: {profile['experience_level']}")
+    if profile.get("location"):
+        parts.append(f"Город: {profile['location']}")
+    if profile.get("preferred_schedule"):
+        parts.append(f"График: {profile['preferred_schedule']}")
+    return ". ".join(parts)
+
+
 if st.button("← Все профили"):
     st.switch_page("pages/profiles.py")
 
@@ -209,7 +227,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-search_prompt = latest_search.get("prompt") if latest_search else ""
+search_prompt = (
+    latest_search.get("prompt")
+    if latest_search
+    else profile.get("search_prompt") or fallback_search_prompt(profile)
+)
 st.markdown(
     '<div class="cards-row">'
     f"{render_profile_card(profile)}"
@@ -219,14 +241,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-repeat_disabled = not latest_search or not search_prompt
+repeat_disabled = not search_prompt
+button_label = "Подобрать вакансии снова" if latest_search else "Подобрать вакансии"
 if st.button(
-    "Подобрать вакансии снова",
+    button_label,
     type="primary",
     use_container_width=True,
     disabled=repeat_disabled,
 ):
-    with st.status("Повторный подбор вакансий", expanded=True) as status:
+    with st.status("Подбор вакансий", expanded=True) as status:
         try:
             st.write("Ищу новые вакансии на hh.ru и Хабр Карьере…")
             asyncio.run(repeat_search(search_prompt, profile_id))
@@ -240,7 +263,7 @@ if st.button(
             st.error(str(exc))
 
 if repeat_disabled:
-    st.caption("Повторный подбор станет доступен после первого поиска.")
+    st.caption("Недостаточно данных профиля для формирования поискового запроса.")
 
 if latest_search:
     try:

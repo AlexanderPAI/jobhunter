@@ -80,6 +80,7 @@ async def cv_analyzer(
         session,
         user_profile,
         user_id=user.id,
+        search_prompt=search_prompt,
         source_filename=file.filename,
         cv_text=state.get("cv_text"),
     )

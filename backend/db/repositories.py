@@ -63,6 +63,7 @@ async def create_profile(
     data: dict[str, Any],
     user_id: uuid.UUID,
     *,
+    search_prompt: str | None = None,
     source_filename: str | None = None,
     cv_text: str | None = None,
 ) -> CandidateProfile:
@@ -70,6 +71,7 @@ async def create_profile(
     profile = CandidateProfile(
         **normalized,
         user_id=uuid.UUID(str(user_id)),
+        search_prompt=search_prompt,
         source_filename=source_filename,
         cv_text=cv_text,
         raw_data=data,

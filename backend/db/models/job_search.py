@@ -42,6 +42,7 @@ class CandidateProfile(Base):
     languages: Mapped[list[str]] = mapped_column(JSONB, default=list)
     education: Mapped[list[str]] = mapped_column(JSONB, default=list)
     summary: Mapped[str | None] = mapped_column(Text)
+    search_prompt: Mapped[str | None] = mapped_column(Text)
     source_filename: Mapped[str | None] = mapped_column(String(512))
     cv_text: Mapped[str | None] = mapped_column(Text)
     raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
