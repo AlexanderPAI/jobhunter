@@ -13,7 +13,7 @@ from backend.api.v1.schemes import SearcherRequest, VacancyCheckerRequest
 from backend.db.connector import get_session
 from backend.db.models import CandidateProfile, User
 from backend.db.repositories import create_profile
-from backend.llm_providers.openrouter import LLMProviderError
+from backend.llm_providers.base import LLMProviderError
 from backend.security import get_current_user
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(get_current_user)])

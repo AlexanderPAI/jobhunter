@@ -6,6 +6,22 @@ class Settings(BaseSettings):
     openrouter_key: str = Field(
         ..., env="OPENROUTER_KEY", description="OpenRouter API key"
     )
+    gigachat_key: str = Field(
+        ..., env="GIGACHAT_KEY", description="GigaChat authorization key"
+    )
+    gigachat_model: str = Field(
+        "GigaChat", env="GIGACHAT_MODEL", description="GigaChat model"
+    )
+    gigachat_url: str = Field(
+        "https://api.giga.chat/v1/chat/completions",
+        env="GIGACHAT_URL",
+        description="GigaChat chat completions URL",
+    )
+    gigachat_verify_ssl_certs: bool = Field(
+        False,
+        env="GIGACHAT_VERIFY_SSL_CERTS",
+        description="Verify TLS certificates for GigaChat requests",
+    )
 
     postgres_user: str = Field(
         ..., env="POSTGRES_USER", description="Postgres user name"
@@ -23,7 +39,7 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(..., min_length=32, env="JWT_SECRET")
     jwt_expire_minutes: int = Field(480, env="JWT_EXPIRE_MINUTES")
 
-    @field_validator("openrouter_key", "jwt_secret", mode="before")
+    @field_validator("openrouter_key", "gigachat_key", "jwt_secret", mode="before")
     @classmethod
     def strip_secret_quotes(cls, value: str) -> str:
         """Docker env files may preserve quotes as part of a secret value."""

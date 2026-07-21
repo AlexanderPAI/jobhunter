@@ -29,7 +29,8 @@ from backend.agents.searcher.tools import parse_habr_vacancies, parse_vacancies
 from backend.config import cfg
 from backend.db.connector import async_session
 from backend.db.repositories import save_search
-from backend.llm_providers.openrouter import OpenRouterAdapter
+from backend.llm_providers.base import LLMAdapter
+from backend.llm_providers.gigachat import GigaChatAdapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("SEARCHER")
@@ -67,11 +68,16 @@ class Agent:
         "query",
     ]
 
-    def __init__(self) -> None:
-        self.llm = OpenRouterAdapter(
-            openrouter_url="https://openrouter.ai/api/v1/chat/completions",
-            openrouter_key=cfg.openrouter_key,
-            model="z-ai/glm-5.2",
+    def __init__(self, llm: LLMAdapter | None = None) -> None:
+        self.llm = (
+            llm
+            if llm is not None
+            else GigaChatAdapter(
+                gigachat_url=cfg.gigachat_url,
+                gigachat_key=cfg.gigachat_key,
+                model=cfg.gigachat_model,
+                verify_ssl_certs=cfg.gigachat_verify_ssl_certs,
+            )
         )
         self.graph = self._build_graph()
 
