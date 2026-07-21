@@ -3,9 +3,11 @@ import html
 
 import streamlit as st
 
-from frontend.db import get_profiles
+from frontend.api import get_profiles
+from frontend.auth import render_account_sidebar, require_auth
 
 st.set_page_config(page_title="Профили — Job Hunter", page_icon="👤", layout="wide")
+require_auth()
 
 st.markdown(
     """
@@ -22,15 +24,20 @@ st.markdown(
     .profile-summary { color: #39465a; font-size: .88rem; line-height: 1.55; margin: .55rem 0 .4rem; }
     .stButton > button { border-radius: 8px; font-weight: 700; }
     [data-testid="stSidebarNav"] { display: none !important; }
-    [data-testid="stToolbar"] { display: none !important; }
+    [data-testid="stAppDeployButton"] { display: none !important; }
+    [data-testid="stMainMenu"], #MainMenu { display: none !important; }
     [data-testid="stDecoration"] { display: none !important; }
     [data-testid="stStatusWidget"] { display: none !important; }
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important; visibility: visible !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
+    render_account_sidebar()
     st.page_link("app.py", label="Новый подбор", icon="📄")
     st.page_link("pages/profiles.py", label="Профили", icon="👥")
 

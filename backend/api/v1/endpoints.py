@@ -11,11 +11,12 @@ from backend.agents.searcher.agent import Agent as SearchAgent
 from backend.agents.vacancy_filter.agent import VacancyFilterAgent
 from backend.api.v1.schemes import SearcherRequest, VacancyCheckerRequest
 from backend.db.connector import get_session
-from backend.db.models import CandidateProfile
+from backend.db.models import CandidateProfile, User
 from backend.db.repositories import create_profile
 from backend.llm_providers.openrouter import LLMProviderError
+from backend.security import get_current_user
 
-router = APIRouter(prefix="/v1")
+router = APIRouter(prefix="/v1", dependencies=[Depends(get_current_user)])
 
 # вынести в конфиги
 UPLOAD_DIR = Path("backend/storage/cv")
@@ -58,6 +59,7 @@ async def upload_cv(file: UploadFile = File(...)):
 async def cv_analyzer(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(
@@ -77,6 +79,8 @@ async def cv_analyzer(
     profile = await create_profile(
         session,
         user_profile,
+        user_id=user.id,
+        search_prompt=search_prompt,
         source_filename=file.filename,
         cv_text=state.get("cv_text"),
     )
@@ -89,10 +93,24 @@ async def cv_analyzer(
 
 
 @router.post("/searcher/chat")
-async def searcher_chat(searcher_request: SearcherRequest):
+async def searcher_chat(
+    searcher_request: SearcherRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    if searcher_request.profile_id is not None:
+        profile = await session.scalar(
+            select(CandidateProfile).where(
+                CandidateProfile.id == searcher_request.profile_id,
+                CandidateProfile.user_id == user.id,
+            )
+        )
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Profile not found")
     search_id = await search_agent.run(
         searcher_request.message,
         str(searcher_request.profile_id) if searcher_request.profile_id else None,
+        str(user.id),
     )
     return {"search_id": search_id}
 
@@ -101,11 +119,15 @@ async def searcher_chat(searcher_request: SearcherRequest):
 async def filter_check(
     request: VacancyCheckerRequest,
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     profile = await session.scalar(
         select(CandidateProfile)
         .join(CandidateProfile.searches)
-        .where(CandidateProfile.searches.any(id=request.search_id))
+        .where(
+            CandidateProfile.user_id == user.id,
+            CandidateProfile.searches.any(id=request.search_id, user_id=user.id),
+        )
     )
     if profile is None:
         raise HTTPException(status_code=404, detail="Profile for search not found")

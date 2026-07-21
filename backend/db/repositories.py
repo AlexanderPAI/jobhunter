@@ -61,13 +61,17 @@ def normalize_profile(data: dict[str, Any]) -> dict[str, Any]:
 async def create_profile(
     session: AsyncSession,
     data: dict[str, Any],
+    user_id: uuid.UUID,
     *,
+    search_prompt: str | None = None,
     source_filename: str | None = None,
     cv_text: str | None = None,
 ) -> CandidateProfile:
     normalized = normalize_profile(data)
     profile = CandidateProfile(
         **normalized,
+        user_id=uuid.UUID(str(user_id)),
+        search_prompt=search_prompt,
         source_filename=source_filename,
         cv_text=cv_text,
         raw_data=data,
@@ -82,6 +86,7 @@ async def save_search(
     session: AsyncSession,
     *,
     profile_id: uuid.UUID | None,
+    user_id: uuid.UUID,
     prompt: str,
     queries: list[str],
     filters: dict[str, Any],
@@ -90,6 +95,7 @@ async def save_search(
     rows: list[dict[str, Any]],
 ) -> SearchRun:
     search = SearchRun(
+        user_id=user_id,
         profile_id=uuid.UUID(str(profile_id)) if profile_id else None,
         prompt=prompt,
         queries=queries,
@@ -145,13 +151,16 @@ async def save_search(
 
 
 async def get_search_rows(
-    session: AsyncSession, search_id: uuid.UUID
+    session: AsyncSession, search_id: uuid.UUID, user_id: uuid.UUID | None = None
 ) -> tuple[SearchRun, list[dict[str, Any]]]:
     search_id = uuid.UUID(str(search_id))
+    query = select(SearchRun).where(SearchRun.id == search_id)
+    if user_id is not None:
+        query = query.where(SearchRun.user_id == user_id)
     search = await session.scalar(
-        select(SearchRun)
-        .where(SearchRun.id == search_id)
-        .options(selectinload(SearchRun.results).selectinload(SearchResult.vacancy))
+        query.options(
+            selectinload(SearchRun.results).selectinload(SearchResult.vacancy)
+        )
     )
     if search is None:
         raise LookupError(f"Search {search_id} not found")
