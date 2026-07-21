@@ -4,11 +4,15 @@ import aiohttp
 import pandas as pd
 import streamlit as st
 
-CV_ANALYZER_URL = "http://backend:8080/v1/cv_analyzer/send_cv"
-SEARCHER_URL = "http://backend:8080/v1/searcher/chat"
-FILTER_URL = "http://backend:8080/v1/filter/check"
+from frontend.api import BACKEND_URL, auth_headers
+from frontend.auth import render_account_sidebar, require_auth
+
+CV_ANALYZER_URL = f"{BACKEND_URL}/v1/cv_analyzer/send_cv"
+SEARCHER_URL = f"{BACKEND_URL}/v1/searcher/chat"
+FILTER_URL = f"{BACKEND_URL}/v1/filter/check"
 
 st.set_page_config(page_title="Job Hunter", page_icon="💼", layout="wide")
+require_auth()
 
 CSS = """
 <style>
@@ -257,11 +261,16 @@ CSS = """
 }
 
 /* скрываем встроенные кнопки Deploy / Stop */
-[data-testid="stToolbar"] { display: none !important; }
+[data-testid="stAppDeployButton"] { display: none !important; }
+[data-testid="stMainMenu"], #MainMenu { display: none !important; }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stStatusWidget"] { display: none !important; }
 [data-testid="stSidebarNav"] { display: none !important; }
 header[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+}
 </style>
 """
 
@@ -295,7 +304,7 @@ async def call_cv_analyzer(file_bytes, filename, content_type):
     form_data.add_field(
         "file", file_bytes, filename=filename, content_type=content_type
     )
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=auth_headers()) as session:
         async with session.post(
             CV_ANALYZER_URL, data=form_data, timeout=aiohttp.ClientTimeout(total=1200)
         ) as resp:
@@ -306,7 +315,7 @@ async def call_cv_analyzer(file_bytes, filename, content_type):
 
 async def call_searcher(search_prompt: str, profile_id: str) -> str:
     """Возвращает идентификатор сохранённого поиска."""
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=auth_headers()) as session:
         async with session.post(
             SEARCHER_URL,
             json={"message": search_prompt, "profile_id": profile_id},
@@ -320,7 +329,7 @@ async def call_searcher(search_prompt: str, profile_id: str) -> str:
 
 async def call_filter(search_id: str) -> list[dict]:
     """Фильтрует сохранённый поиск и возвращает вакансии."""
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=auth_headers()) as session:
         async with session.post(
             FILTER_URL,
             json={"search_id": search_id},
@@ -377,6 +386,7 @@ def render_vacancy_table(dataframe):
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    render_account_sidebar()
     st.page_link("app.py", label="Новый подбор", icon="📄")
     st.page_link("pages/profiles.py", label="Профили", icon="👥")
 
@@ -407,6 +417,9 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     if st.button("Анализировать резюме", type="primary", use_container_width=True):
+        # Do not keep showing a previous profile when a new analysis fails.
+        st.session_state.pop("api_response", None)
+        st.session_state.pop("vacancies", None)
         with st.spinner("Анализирую резюме…"):
             try:
                 api_response = asyncio.run(

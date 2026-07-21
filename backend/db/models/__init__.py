@@ -6,3 +6,4 @@ from backend.db.models.job_search import (  # noqa
     Vacancy,
 )
 from backend.db.models.test import Test  # noqa
+from backend.db.models.user import User  # noqa

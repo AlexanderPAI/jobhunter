@@ -1,14 +1,14 @@
 import asyncio
+import logging
 import pprint
 from typing import Any
 
 import aiohttp
 
 from backend.config import cfg
+from backend.llm_providers.base import LLMProviderError
 
-
-class LLMProviderError(RuntimeError):
-    """Понятная для API ошибка обращения к LLM-провайдеру."""
+logger = logging.getLogger("OPENROUTER")
 
 
 class OpenRouterAdapter:
@@ -38,9 +38,15 @@ class OpenRouterAdapter:
                         payload = await response.json(content_type=None)
                         if response.status >= 400:
                             message = payload.get("error", {}).get("message", payload)
-                            raise LLMProviderError(
+                            error = LLMProviderError(
                                 f"OpenRouter вернул HTTP {response.status}: {message}"
                             )
+                            # Authentication, balance and request errors do not benefit
+                            # from an immediate retry with identical parameters.
+                            if 400 <= response.status < 500:
+                                logger.error("%s", error)
+                                raise error from None
+                            raise error
                         choices = payload.get("choices") or []
                         choice = choices[0] if choices else {}
                         content = (choice.get("message") or {}).get("content")
@@ -57,10 +63,13 @@ class OpenRouterAdapter:
                 LLMProviderError,
             ) as exc:
                 last_error = exc
+                if isinstance(exc, LLMProviderError) and "HTTP 4" in str(exc):
+                    break
                 if attempt == 0:
                     await asyncio.sleep(1)
 
         detail = str(last_error) if last_error else "неизвестная ошибка"
+        logger.error("OpenRouter request failed: %s", detail)
         raise LLMProviderError(
             f"OpenRouter не дал корректный ответ после двух попыток: {detail}"
         ) from last_error

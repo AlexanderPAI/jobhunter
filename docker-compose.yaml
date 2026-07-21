@@ -5,23 +5,28 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     volumes:
       - ./backend/storage:/app/backend/storage:rw
     env_file:
       - .env
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Add JWT_SECRET with at least 32 characters to .env}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-480}
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - public
+      - frontend_backend
+      - backend_db
 
   db:
     container_name: hunter_ps
     image: postgres:17
     volumes:
       - postgres_data:/var/lib/postgresql/data:rw
-    ports:
-      - "5432:5432"
     env_file:
       - .env
     environment:
@@ -35,6 +40,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - backend_db
 
   frontend:
     container_name: frontend
@@ -43,13 +50,21 @@ services:
       dockerfile: frontend/Dockerfile
     ports:
       - "8501:8501"
-    env_file:
-      - .env
+    environment:
+      BACKEND_URL: http://backend:8080
     depends_on:
-      db:
-        condition: service_healthy
       backend:
         condition: service_started
+    networks:
+      - public
+      - frontend_backend
 
 volumes:
   postgres_data:
+
+networks:
+  public:
+  frontend_backend:
+    internal: true
+  backend_db:
+    internal: true
