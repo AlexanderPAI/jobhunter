@@ -25,8 +25,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from backend.agents.cv_analyzer.tools import extract_cv_text
-from backend.config import cfg
-from backend.llm_providers.openrouter import OpenRouterAdapter
+from backend.llm_providers.base import LLMAdapter
+from backend.llm_providers.factory import create_llm_adapter
 from backend.utils.prompt_loader import load_prompt
 
 logger = logging.getLogger("CV_ANALYZER")
@@ -50,12 +50,8 @@ class State(TypedDict):
 
 
 class CVAnalyzerAgent:
-    def __init__(self):
-        self.llm = OpenRouterAdapter(
-            openrouter_url="https://openrouter.ai/api/v1/chat/completions",
-            openrouter_key=cfg.openrouter_key,
-            model="z-ai/glm-5.2",
-        )
+    def __init__(self, llm: LLMAdapter | None = None):
+        self.llm = llm if llm is not None else create_llm_adapter()
         self.graph = self._build_graph()
 
     # Нода 1: читаем файл резюме

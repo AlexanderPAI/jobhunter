@@ -6,12 +6,9 @@ from typing import Any
 import aiohttp
 
 from backend.config import cfg
+from backend.llm_providers.base import LLMProviderError
 
 logger = logging.getLogger("OPENROUTER")
-
-
-class LLMProviderError(RuntimeError):
-    """Понятная для API ошибка обращения к LLM-провайдеру."""
 
 
 class OpenRouterAdapter:
