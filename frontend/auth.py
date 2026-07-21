@@ -20,6 +20,22 @@ def logout() -> None:
 def require_auth() -> None:
     if st.session_state.get("access_token"):
         return
+    st.markdown(
+        """
+        <style>
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        [data-testid="stSidebarNav"] {
+            display: none !important;
+        }
+        header[data-testid="stHeader"] {
+            background: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("## Job Hunter")
     st.caption("Войдите, чтобы продолжить")
     with st.form("login_form"):
