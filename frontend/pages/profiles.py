@@ -7,7 +7,7 @@ from frontend.api import get_profiles
 from frontend.auth import render_account_sidebar, require_auth
 from frontend.ui import inject_theme, render_brand, template
 
-st.set_page_config(page_title="Профили — КарьеРадар", page_icon="🟢", layout="wide")
+st.set_page_config(page_title="Профили — КарьеРадар", page_icon="🟣", layout="wide")
 require_auth()
 inject_theme()
 

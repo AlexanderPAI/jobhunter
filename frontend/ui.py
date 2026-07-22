@@ -18,8 +18,8 @@ def load_stylesheet(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
 
 
-def template(name: str, **context: object) -> str:
-    return load_template(name).format_map(context)
+def template(template_name: str, **context: object) -> str:
+    return load_template(template_name).format_map(context)
 
 
 def inject_styles(*names: str) -> None:

@@ -37,7 +37,7 @@ COL_META = {
     "link": ("Ссылка", "10%"),
 }
 
-st.set_page_config(page_title="КарьеРадар", page_icon="🟢", layout="wide")
+st.set_page_config(page_title="КарьеРадар", page_icon="🟣", layout="wide")
 require_auth()
 
 
