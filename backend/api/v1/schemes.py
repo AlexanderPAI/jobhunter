@@ -10,3 +10,7 @@ class SearcherRequest(BaseModel):
 
 class VacancyCheckerRequest(BaseModel):
     search_id: uuid.UUID = Field(..., description="Идентификатор поиска")
+
+
+class ResumeRecommendationsRequest(BaseModel):
+    profile_id: uuid.UUID = Field(..., description="Идентификатор профиля")

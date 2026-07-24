@@ -7,9 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.cv_analyzer.agent import CVAnalyzerAgent
+from backend.agents.resume_advisor.agent import ResumeAdvisorAgent
 from backend.agents.searcher.agent import Agent as SearchAgent
 from backend.agents.vacancy_filter.agent import VacancyFilterAgent
-from backend.api.v1.schemes import SearcherRequest, VacancyCheckerRequest
+from backend.api.v1.schemes import (
+    ResumeRecommendationsRequest,
+    SearcherRequest,
+    VacancyCheckerRequest,
+)
 from backend.db.connector import get_session
 from backend.db.models import CandidateProfile, User
 from backend.db.repositories import create_profile
@@ -30,6 +35,7 @@ ALLOWED_TYPES = {
 }
 
 cv_analyzer_agent = CVAnalyzerAgent()
+resume_advisor_agent = ResumeAdvisorAgent()
 search_agent = SearchAgent()
 vacancy_filter_agent = VacancyFilterAgent()
 
@@ -89,6 +95,32 @@ async def cv_analyzer(
         "search_prompt": search_prompt,
         "user_profile": user_profile,
         "profile_id": str(profile.id),
+    }
+
+
+@router.post("/resume_advisor/recommendations")
+async def resume_recommendations(
+    request: ResumeRecommendationsRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    profile = await session.scalar(
+        select(CandidateProfile).where(
+            CandidateProfile.id == request.profile_id,
+            CandidateProfile.user_id == user.id,
+        )
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    recommendations, _ = await resume_advisor_agent.run(
+        profile.raw_data,
+        profile.cv_text,
+        skill="base",
+    )
+    return {
+        "profile_id": str(profile.id),
+        "recommendations": recommendations,
     }
 
 

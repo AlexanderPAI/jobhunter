@@ -7,7 +7,12 @@ import aiohttp
 import pandas as pd
 import streamlit as st
 
-from frontend.api import get_profile, get_search_vacancies, repeat_search
+from frontend.api import (
+    get_profile,
+    get_resume_recommendations,
+    get_search_vacancies,
+    repeat_search,
+)
 from frontend.auth import render_account_sidebar, require_auth
 from frontend.ui import inject_theme, render_brand, template
 
@@ -166,6 +171,22 @@ cards = (
     )
 )
 st.markdown(template("cards_row.html", cards=cards), unsafe_allow_html=True)
+
+recommendations_key = f"resume_recommendations_{profile_id}"
+if st.button("Получить рекомендации по резюме", use_container_width=True):
+    with st.spinner("Анализируем резюме…"):
+        try:
+            st.session_state[recommendations_key] = asyncio.run(
+                get_resume_recommendations(profile_id)
+            )
+        except aiohttp.ClientConnectorError:
+            st.error("Не удалось подключиться к backend.")
+        except (TimeoutError, RuntimeError) as error:
+            st.error(str(error))
+
+if recommendations := st.session_state.get(recommendations_key):
+    with st.expander("Рекомендации по резюме", expanded=True):
+        st.markdown(recommendations)
 
 repeat_disabled = not search_prompt
 button_label = "Обновить радар" if latest_search else "Сканировать рынок"

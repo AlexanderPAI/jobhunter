@@ -69,6 +69,24 @@ async def get_search_vacancies(search_id: str, *, relevant_only: bool) -> list[d
     )
 
 
+async def get_resume_recommendations(profile_id: str) -> str:
+    timeout = aiohttp.ClientTimeout(total=300)
+    async with aiohttp.ClientSession(
+        timeout=timeout, headers=auth_headers()
+    ) as session:
+        async with session.post(
+            f"{BACKEND_URL}/v1/resume_advisor/recommendations",
+            json={"profile_id": profile_id},
+        ) as response:
+            if response.status == 404:
+                raise RuntimeError("Профиль не найден")
+            if response.status != 200:
+                raise RuntimeError(
+                    f"Ошибка анализа {response.status}: {await response.text()}"
+                )
+            return (await response.json())["recommendations"]
+
+
 async def repeat_search(search_prompt: str, profile_id: str) -> list[dict]:
     timeout = aiohttp.ClientTimeout(total=1200)
     async with aiohttp.ClientSession(

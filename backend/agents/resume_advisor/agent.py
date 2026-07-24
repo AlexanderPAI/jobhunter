@@ -1,0 +1,102 @@
+"""
+Resume Advisor Agent
+====================
+
+Граф:
+  generate_recommendations -> END
+
+Базовый навык анализирует уже созданный профиль и исходный текст резюме,
+после чего возвращает приоритетные рекомендации по улучшению резюме.
+Новые специализированные навыки добавляются как отдельные промпты в SKILL_PROMPTS.
+"""
+
+import json
+import logging
+from pathlib import Path
+from typing import Annotated, List, TypedDict
+
+from langchain_core.messages import AIMessage
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+
+from backend.llm_providers.base import LLMAdapter
+from backend.llm_providers.factory import create_llm_adapter
+from backend.utils.prompt_loader import load_prompt
+
+logger = logging.getLogger("RESUME_ADVISOR")
+
+PROMPTS_PATH = Path(__file__).parent / "prompts/base.yaml"
+SKILL_PROMPTS = {
+    "base": load_prompt(PROMPTS_PATH, "base_recommendations_system"),
+}
+
+
+class State(TypedDict):
+    messages: Annotated[List, add_messages]
+    user_profile: dict
+    cv_text: str
+    skill: str
+    final_answer: str
+
+
+class ResumeAdvisorAgent:
+    def __init__(self, llm: LLMAdapter | None = None) -> None:
+        self.llm = llm if llm is not None else create_llm_adapter()
+        self.graph = self._build_graph()
+
+    async def generate_recommendations(self, state: State) -> dict:
+        skill = state["skill"]
+        system_prompt = SKILL_PROMPTS.get(skill)
+        if system_prompt is None:
+            raise ValueError(f"Unsupported resume advisor skill: {skill}")
+
+        profile_json = json.dumps(state["user_profile"], ensure_ascii=False, indent=2)
+        cv_text = state["cv_text"].strip() or (
+            "Исходный текст резюме недоступен. Анализируй только профиль."
+        )
+        prompt = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Структурированный профиль:\n{profile_json}\n\n"
+                    f"Исходный текст резюме:\n{cv_text}"
+                ),
+            },
+        ]
+
+        response = await self.llm.chat(prompt)
+        final_answer = (
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        ).strip()
+        logger.info("Сформированы рекомендации по резюме, навык: %s", skill)
+
+        return {
+            "final_answer": final_answer,
+            "messages": [AIMessage(content=final_answer)],
+        }
+
+    def _build_graph(self) -> StateGraph:
+        workflow = StateGraph(State)
+        workflow.add_node("generate_recommendations", self.generate_recommendations)
+        workflow.set_entry_point("generate_recommendations")
+        workflow.add_edge("generate_recommendations", END)
+        return workflow.compile()
+
+    async def run(
+        self,
+        user_profile: dict,
+        cv_text: str | None = None,
+        *,
+        skill: str = "base",
+    ) -> tuple[str, State]:
+        initial_state: State = {
+            "messages": [],
+            "user_profile": user_profile,
+            "cv_text": cv_text or "",
+            "skill": skill,
+            "final_answer": "",
+        }
+        result_state = await self.graph.ainvoke(initial_state)
+        return result_state.get("final_answer", ""), result_state
