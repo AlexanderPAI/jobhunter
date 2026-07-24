@@ -16,6 +16,7 @@ with st.sidebar:
     render_account_sidebar()
     st.page_link("app.py", label="Новый радар")
     st.page_link("pages/profiles.py", label="Карьерные профили")
+    st.page_link("pages/vacancy_analyses.py", label="Анализы вакансий")
 
 
 def short_summary(value: str | None) -> str:

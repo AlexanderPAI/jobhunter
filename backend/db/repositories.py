@@ -2,12 +2,20 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.db.models import CandidateProfile, SearchResult, SearchRun, Vacancy
+from backend.db.models import (
+    CandidateProfile,
+    ResumeRecommendation,
+    SearchResult,
+    SearchRun,
+    Vacancy,
+    VacancyAnalysis,
+)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -58,6 +66,17 @@ def normalize_profile(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _vacancy_source(link: str, fallback: str | None = None) -> str:
+    host = (urlparse(link).hostname or "").lower()
+    if host == "career.habr.com":
+        return "habr"
+    if host == "hh.ru" or host.endswith(".hh.ru"):
+        return "hh"
+    if fallback in {"hh", "habr"}:
+        return fallback
+    raise ValueError(f"Unsupported vacancy source: {link}")
+
+
 async def create_profile(
     session: AsyncSession,
     data: dict[str, Any],
@@ -80,6 +99,47 @@ async def create_profile(
     await session.commit()
     await session.refresh(profile)
     return profile
+
+
+async def save_resume_recommendation(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    skill: str,
+    content: str,
+) -> ResumeRecommendation:
+    recommendation = ResumeRecommendation(
+        profile_id=uuid.UUID(str(profile_id)),
+        skill=skill,
+        content=content,
+    )
+    session.add(recommendation)
+    await session.commit()
+    await session.refresh(recommendation)
+    return recommendation
+
+
+async def save_vacancy_analysis(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    vacancy_id: uuid.UUID,
+    result: str,
+    vacancy_snapshot: dict[str, Any],
+) -> VacancyAnalysis:
+    analysis = VacancyAnalysis(
+        user_id=uuid.UUID(str(user_id)),
+        profile_id=uuid.UUID(str(profile_id)),
+        vacancy_id=uuid.UUID(str(vacancy_id)),
+        skill="vacancy_match",
+        result=result,
+        vacancy_snapshot=vacancy_snapshot,
+    )
+    session.add(analysis)
+    await session.commit()
+    await session.refresh(analysis)
+    return analysis
 
 
 async def save_search(
@@ -112,7 +172,7 @@ async def save_search(
         vacancy = await session.scalar(
             select(Vacancy).where(Vacancy.external_url == link)
         )
-        source = row.get("source") or ("habr" if "habr.com" in link else "hh")
+        source = _vacancy_source(link, row.get("source"))
         if vacancy is None:
             vacancy = Vacancy(
                 source=source,
@@ -128,6 +188,7 @@ async def save_search(
             session.add(vacancy)
             await session.flush()
         else:
+            vacancy.source = source
             vacancy.title = row.get("title") or vacancy.title
             vacancy.company = row.get("company")
             vacancy.salary_text = row.get("salary")

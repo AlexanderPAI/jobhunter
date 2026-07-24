@@ -138,6 +138,7 @@ with st.sidebar:
     render_account_sidebar()
     st.page_link("app.py", label="Новый радар")
     st.page_link("pages/profiles.py", label="Карьерные профили")
+    st.page_link("pages/vacancy_analyses.py", label="Анализы вакансий")
 
 inject_theme()
 st.markdown(template("home_hero.html", radar=radar_art()), unsafe_allow_html=True)
