@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 from playwright.async_api import async_playwright
@@ -151,6 +151,13 @@ class SearchFilters:
 
 class HHParser:
 
+    REQUEST_TIMEOUT_SECONDS = 60
+    REQUEST_HEADERS = {
+        "Accept": "application/json,text/html,application/xhtml+xml",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "User-Agent": "JobHunter/0.2 (single vacancy parser)",
+    }
+
     def __init__(
         self,
         search_queries: list[str],
@@ -206,6 +213,98 @@ class HHParser:
     @staticmethod
     def _clean(text: str) -> str:
         return re.sub(r"\s+", " ", text or "").strip()
+
+    @staticmethod
+    def _clean_html(value: object) -> str:
+        if value is None:
+            return ""
+        text = html_lib.unescape(str(value))
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(?:p|li|div|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _vacancy_id_from_url(
+        url: str,
+        *,
+        allowed_hosts: set[str],
+        path_pattern: str,
+    ) -> str:
+        parsed = urlparse(url.strip())
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or host not in allowed_hosts:
+            expected_host = sorted(allowed_hosts)[0]
+            raise ValueError(f"Ожидается ссылка на вакансию с домена {expected_host}")
+
+        match = re.fullmatch(path_pattern, parsed.path.rstrip("/"))
+        if match is None:
+            raise ValueError("Не удалось определить идентификатор вакансии")
+        return match.group(1)
+
+    @staticmethod
+    def _format_detail_salary(salary: dict | None) -> str:
+        if not salary:
+            return "не указана"
+
+        salary_from = salary.get("from")
+        salary_to = salary.get("to")
+        currency = salary.get("currency") or ""
+        if salary_from is not None and salary_to is not None:
+            amount = f"{salary_from:,}–{salary_to:,}"
+        elif salary_from is not None:
+            amount = f"от {salary_from:,}"
+        elif salary_to is not None:
+            amount = f"до {salary_to:,}"
+        else:
+            return "не указана"
+
+        tax = "до вычета налогов" if salary.get("gross") else "на руки"
+        return f"{amount.replace(',', ' ')} {currency} ({tax})".strip()
+
+    async def parse_vacancy(self, url: str) -> dict:
+        """Парсит одну вакансию hh.ru по прямой ссылке."""
+        vacancy_id = self._vacancy_id_from_url(
+            url,
+            allowed_hosts={"hh.ru", "www.hh.ru"},
+            path_pattern=r"/vacancy/(\d+)",
+        )
+        timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(
+            headers=self.REQUEST_HEADERS, timeout=timeout
+        ) as session:
+            async with session.get(
+                f"https://api.hh.ru/vacancies/{vacancy_id}"
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+
+        if not isinstance(data, dict):
+            raise ValueError("HH вернул данные вакансии в неожиданном формате")
+
+        address = data.get("address") or {}
+        area = data.get("area") or {}
+        return {
+            "source": "hh",
+            "external_id": str(data.get("id") or vacancy_id),
+            "title": data.get("name") or "—",
+            "company": (data.get("employer") or {}).get("name") or "—",
+            "salary": self._format_detail_salary(data.get("salary")),
+            "city": address.get("raw") or area.get("name") or "—",
+            "schedule": (data.get("schedule") or {}).get("name") or "—",
+            "employment": (data.get("employment") or {}).get("name") or "—",
+            "experience": (data.get("experience") or {}).get("name") or "—",
+            "skills": [
+                skill["name"]
+                for skill in data.get("key_skills") or []
+                if isinstance(skill, dict) and skill.get("name")
+            ],
+            "description": self._clean_html(data.get("description")),
+            "published_at": data.get("published_at"),
+            "link": data.get("alternate_url") or url,
+        }
 
     @staticmethod
     def _salary_from_card(card) -> str:
@@ -698,6 +797,126 @@ class CareerHabrParser(HHParser):
             "schedule": self._format_habr_schedule(vacancy),
             "experience": self._format_habr_experience(vacancy),
             "link": link or "—",
+        }
+
+    @staticmethod
+    def _extract_json_ld(page_html: str) -> list[dict]:
+        blocks: list[dict] = []
+        pattern = re.compile(
+            r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>" r"(.*?)</script>",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for raw_block in pattern.findall(page_html):
+            try:
+                parsed = json.loads(raw_block)
+            except json.JSONDecodeError:
+                try:
+                    parsed = json.loads(html_lib.unescape(raw_block))
+                except json.JSONDecodeError:
+                    continue
+            candidates = parsed if isinstance(parsed, list) else [parsed]
+            blocks.extend(item for item in candidates if isinstance(item, dict))
+        return blocks
+
+    @classmethod
+    def _extract_job_posting(cls, page_html: str) -> dict:
+        for block in cls._extract_json_ld(page_html):
+            graph = block.get("@graph")
+            candidates = graph if isinstance(graph, list) else [block]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                types = candidate.get("@type")
+                type_names = types if isinstance(types, list) else [types]
+                if "JobPosting" in type_names:
+                    return candidate
+        raise ValueError("На странице Хабр Карьеры не найдены данные вакансии")
+
+    @staticmethod
+    def _format_detail_habr_salary(value: object) -> str:
+        if not isinstance(value, dict):
+            return "не указана"
+        amount = value.get("value")
+        currency = value.get("currency") or ""
+        if isinstance(amount, dict):
+            minimum = amount.get("minValue")
+            maximum = amount.get("maxValue")
+            if minimum is not None and maximum is not None:
+                text = f"{minimum}–{maximum}"
+            elif minimum is not None:
+                text = f"от {minimum}"
+            elif maximum is not None:
+                text = f"до {maximum}"
+            else:
+                text = amount.get("value")
+        else:
+            text = amount
+        if text in (None, ""):
+            return "не указана"
+        return f"{text} {currency}".strip()
+
+    @staticmethod
+    def _format_detail_habr_location(value: object) -> str:
+        locations = value if isinstance(value, list) else [value]
+        names: list[str] = []
+        for location in locations:
+            if not isinstance(location, dict):
+                continue
+            address = location.get("address") or {}
+            if not isinstance(address, dict):
+                continue
+            name = (
+                address.get("addressLocality")
+                or address.get("streetAddress")
+                or address.get("addressRegion")
+            )
+            if name and name not in names:
+                names.append(str(name))
+        return ", ".join(names) or "—"
+
+    @classmethod
+    def _format_detail_habr_skills(cls, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [cls._clean_html(item) for item in value if cls._clean_html(item)]
+        if isinstance(value, str):
+            return [
+                item.strip()
+                for item in re.split(r"[,;]", cls._clean_html(value))
+                if item.strip()
+            ]
+        return []
+
+    async def parse_vacancy(self, url: str) -> dict:
+        """Парсит одну вакансию career.habr.com по прямой ссылке."""
+        vacancy_id = self._vacancy_id_from_url(
+            url,
+            allowed_hosts={"career.habr.com"},
+            path_pattern=r"/vacancies/(\d+)",
+        )
+        canonical_url = f"https://career.habr.com/vacancies/{vacancy_id}"
+        timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(
+            headers=self.REQUEST_HEADERS, timeout=timeout
+        ) as session:
+            page_html = await self._fetch_html(session, canonical_url)
+
+        data = self._extract_job_posting(page_html)
+        organization = data.get("hiringOrganization") or {}
+        company = organization.get("name") if isinstance(organization, dict) else None
+        return {
+            "source": "habr",
+            "external_id": vacancy_id,
+            "title": data.get("title") or data.get("name") or "—",
+            "company": company or "—",
+            "salary": self._format_detail_habr_salary(data.get("baseSalary")),
+            "city": self._format_detail_habr_location(data.get("jobLocation")),
+            "schedule": self._clean_html(data.get("jobLocationType")) or "—",
+            "employment": self._clean_html(data.get("employmentType")) or "—",
+            "experience": (self._clean_html(data.get("experienceRequirements")) or "—"),
+            "skills": self._format_detail_habr_skills(data.get("skills")),
+            "description": self._clean_html(data.get("description")),
+            "published_at": data.get("datePosted"),
+            "link": data.get("url") or canonical_url,
         }
 
     @staticmethod
