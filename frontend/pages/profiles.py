@@ -5,41 +5,17 @@ import streamlit as st
 
 from frontend.api import get_profiles
 from frontend.auth import render_account_sidebar, require_auth
+from frontend.ui import inject_theme, render_brand, template
 
-st.set_page_config(page_title="Профили — Job Hunter", page_icon="👤", layout="wide")
+st.set_page_config(page_title="Профили — КарьеРадар", page_icon="🟣", layout="wide")
 require_auth()
-
-st.markdown(
-    """
-    <style>
-    .block-container { max-width: 1180px; padding-top: 2rem; }
-    .profiles-title { font-size: 2.6rem; font-weight: 800; color: #172033; margin: 0; }
-    .profiles-lead { color: #617085; margin: .5rem 0 1.5rem; }
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        background: rgba(255,255,255,.94); border-color: #d9e2ef !important;
-        box-shadow: 0 12px 28px rgba(37,99,235,.06); border-radius: 10px;
-    }
-    .profile-name { font-size: 1.25rem; font-weight: 800; color: #172033; }
-    .profile-positions { color: #2563eb; font-size: .88rem; font-weight: 650; margin-top: .25rem; }
-    .profile-summary { color: #39465a; font-size: .88rem; line-height: 1.55; margin: .55rem 0 .4rem; }
-    .stButton > button { border-radius: 8px; font-weight: 700; }
-    [data-testid="stSidebarNav"] { display: none !important; }
-    [data-testid="stAppDeployButton"] { display: none !important; }
-    [data-testid="stMainMenu"], #MainMenu { display: none !important; }
-    [data-testid="stDecoration"] { display: none !important; }
-    [data-testid="stStatusWidget"] { display: none !important; }
-    [data-testid="stSidebarCollapsedControl"] {
-        display: flex !important; visibility: visible !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+inject_theme()
 
 with st.sidebar:
+    render_brand()
     render_account_sidebar()
-    st.page_link("app.py", label="Новый подбор", icon="📄")
-    st.page_link("pages/profiles.py", label="Профили", icon="👥")
+    st.page_link("app.py", label="Новый радар")
+    st.page_link("pages/profiles.py", label="Карьерные профили")
 
 
 def short_summary(value: str | None) -> str:
@@ -48,48 +24,48 @@ def short_summary(value: str | None) -> str:
     return f"{summary}…" if len(words) > 20 else summary
 
 
-st.markdown(
-    '<div class="profiles-title">Профили кандидатов</div>', unsafe_allow_html=True
-)
-st.markdown(
-    '<div class="profiles-lead">Сохранённые профили и результаты последних подборов вакансий.</div>',
-    unsafe_allow_html=True,
-)
+st.markdown(template("profiles_header.html"), unsafe_allow_html=True)
 
 try:
     profiles = asyncio.run(get_profiles())
-except Exception as exc:
-    st.error(f"Не удалось получить профили из базы данных: {exc}")
+except Exception as error:
+    st.error(f"Не удалось получить профили из базы данных: {error}")
     st.stop()
 
 if not profiles:
-    st.info("Профилей пока нет. Загрузите резюме на странице подбора вакансий.")
-    st.page_link("app.py", label="Перейти к загрузке резюме", icon="📄")
+    st.info(
+        "Радар ещё не настроен. Загрузите резюме, чтобы создать первый карьерный профиль."
+    )
+    st.page_link("app.py", label="Настроить КарьеРадар")
     st.stop()
 
 for profile in profiles:
     with st.container(border=True):
         main, action = st.columns([5, 1.2], vertical_alignment="center")
         with main:
-            name = html.escape(profile.get("name") or "Без имени")
-            positions = html.escape(
-                ", ".join(
-                    profile.get("latest_queries")
-                    or profile.get("target_positions")
-                    or []
-                )
-            )
             st.markdown(
-                f'<div class="profile-name">{name}</div>', unsafe_allow_html=True
+                template(
+                    "profile_list_name.html",
+                    name=html.escape(profile.get("name") or "Без имени"),
+                ),
+                unsafe_allow_html=True,
+            )
+            positions = ", ".join(
+                profile.get("latest_queries") or profile.get("target_positions") or []
             )
             if positions:
                 st.markdown(
-                    f'<div class="profile-positions">{positions}</div>',
+                    template(
+                        "profile_list_positions.html", positions=html.escape(positions)
+                    ),
                     unsafe_allow_html=True,
                 )
             if profile.get("summary"):
                 st.markdown(
-                    f'<div class="profile-summary">{html.escape(short_summary(profile["summary"]))}</div>',
+                    template(
+                        "profile_list_summary.html",
+                        summary=html.escape(short_summary(profile["summary"])),
+                    ),
                     unsafe_allow_html=True,
                 )
         with action:
