@@ -7,7 +7,13 @@ import aiohttp
 import pandas as pd
 import streamlit as st
 
-from frontend.api import get_profile, get_search_vacancies, repeat_search
+from frontend.api import (
+    analyze_vacancy,
+    get_profile,
+    get_resume_recommendations,
+    get_search_vacancies,
+    repeat_search,
+)
 from frontend.auth import render_account_sidebar, require_auth
 from frontend.ui import inject_theme, render_brand, template
 
@@ -47,6 +53,7 @@ with st.sidebar:
     render_account_sidebar()
     st.page_link("app.py", label="Новый радар")
     st.page_link("pages/profiles.py", label="Карьерные профили")
+    st.page_link("pages/vacancy_analyses.py", label="Анализы вакансий")
 
 
 def format_datetime(value: datetime | None) -> str:
@@ -130,7 +137,7 @@ if not profile_id:
     st.stop()
 
 try:
-    profile, latest_search = asyncio.run(get_profile(profile_id))
+    profile, latest_search, latest_recommendation = asyncio.run(get_profile(profile_id))
 except Exception as error:
     st.error(f"Не удалось получить профиль из базы данных: {error}")
     st.stop()
@@ -166,6 +173,25 @@ cards = (
     )
 )
 st.markdown(template("cards_row.html", cards=cards), unsafe_allow_html=True)
+
+recommendations_key = f"resume_recommendations_{profile_id}"
+if latest_recommendation is not None:
+    st.session_state[recommendations_key] = latest_recommendation["content"]
+
+if st.button("Получить рекомендации по резюме", use_container_width=True):
+    with st.spinner("Анализируем резюме…"):
+        try:
+            st.session_state[recommendations_key] = asyncio.run(
+                get_resume_recommendations(profile_id)
+            )
+        except aiohttp.ClientConnectorError:
+            st.error("Не удалось подключиться к backend.")
+        except (TimeoutError, RuntimeError) as error:
+            st.error(str(error))
+
+if recommendations := st.session_state.get(recommendations_key):
+    with st.expander("Рекомендации по резюме", expanded=True):
+        st.markdown(recommendations)
 
 repeat_disabled = not search_prompt
 button_label = "Обновить радар" if latest_search else "Сканировать рынок"
@@ -205,7 +231,55 @@ if latest_search:
         if dataframe.empty:
             st.info("В последнем подборе нет подходящих вакансий.")
         else:
-            st.markdown(render_vacancy_table(dataframe), unsafe_allow_html=True)
+            for index, vacancy in enumerate(vacancies):
+                with st.container(border=True):
+                    details, links, action = st.columns(
+                        [4.2, 1.2, 1.7], vertical_alignment="center"
+                    )
+                    with details:
+                        st.markdown(f"**{vacancy.get('title') or '—'}**")
+                        st.caption(
+                            " · ".join(
+                                str(value)
+                                for value in (
+                                    vacancy.get("company"),
+                                    vacancy.get("salary"),
+                                    vacancy.get("city"),
+                                )
+                                if value and value != "—"
+                            )
+                        )
+                    with links:
+                        st.link_button(
+                            "Вакансия ↗",
+                            vacancy["link"],
+                            use_container_width=True,
+                        )
+                    with action:
+                        if st.button(
+                            "Проверить соответствие",
+                            key=f"match_{vacancy['vacancy_id']}_{index}",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            with st.spinner("Сопоставляем профиль и вакансию…"):
+                                try:
+                                    analysis_id = asyncio.run(
+                                        analyze_vacancy(
+                                            profile_id,
+                                            str(vacancy["vacancy_id"]),
+                                        )
+                                    )
+                                    st.session_state["selected_analysis_id"] = (
+                                        analysis_id
+                                    )
+                                    st.switch_page("pages/vacancy_analysis.py")
+                                except (
+                                    aiohttp.ClientConnectorError,
+                                    TimeoutError,
+                                    RuntimeError,
+                                ) as error:
+                                    st.error(str(error))
             st.download_button(
                 "Скачать CSV",
                 dataframe.to_csv(index=False).encode("utf-8-sig"),

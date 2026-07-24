@@ -52,11 +52,17 @@ async def get_profiles() -> list[dict]:
     return [_dates(item) for item in (await _get("/v1/history/profiles") or [])]
 
 
-async def get_profile(profile_id: str) -> tuple[dict | None, dict | None]:
+async def get_profile(
+    profile_id: str,
+) -> tuple[dict | None, dict | None, dict | None]:
     data = await _get(f"/v1/history/profiles/{profile_id}")
     if data is None:
-        return None, None
-    return _dates(data["profile"]), _dates(data["latest_search"])
+        return None, None, None
+    return (
+        _dates(data["profile"]),
+        _dates(data["latest_search"]),
+        _dates(data["latest_recommendation"]),
+    )
 
 
 async def get_search_vacancies(search_id: str, *, relevant_only: bool) -> list[dict]:
@@ -67,6 +73,53 @@ async def get_search_vacancies(search_id: str, *, relevant_only: bool) -> list[d
         )
         or []
     )
+
+
+async def get_resume_recommendations(profile_id: str) -> str:
+    timeout = aiohttp.ClientTimeout(total=300)
+    async with aiohttp.ClientSession(
+        timeout=timeout, headers=auth_headers()
+    ) as session:
+        async with session.post(
+            f"{BACKEND_URL}/v1/resume_advisor/recommendations",
+            json={"profile_id": profile_id},
+        ) as response:
+            if response.status == 404:
+                raise RuntimeError("Профиль не найден")
+            if response.status != 200:
+                raise RuntimeError(
+                    f"Ошибка анализа {response.status}: {await response.text()}"
+                )
+            return (await response.json())["recommendations"]
+
+
+async def analyze_vacancy(profile_id: str, vacancy_id: str) -> str:
+    timeout = aiohttp.ClientTimeout(total=300)
+    async with aiohttp.ClientSession(
+        timeout=timeout, headers=auth_headers()
+    ) as session:
+        async with session.post(
+            f"{BACKEND_URL}/v1/vacancy_match/analyze",
+            json={"profile_id": profile_id, "vacancy_id": vacancy_id},
+        ) as response:
+            if response.status == 503:
+                data = await response.json()
+                raise RuntimeError(
+                    data.get("detail") or "Сайт с вакансией временно недоступен."
+                )
+            if response.status != 200:
+                raise RuntimeError(
+                    f"Ошибка анализа {response.status}: {await response.text()}"
+                )
+            return (await response.json())["analysis_id"]
+
+
+async def get_vacancy_analyses() -> list[dict]:
+    return [_dates(item) for item in (await _get("/v1/history/vacancy-analyses") or [])]
+
+
+async def get_vacancy_analysis(analysis_id: str) -> dict | None:
+    return _dates(await _get(f"/v1/history/vacancy-analyses/{analysis_id}"))
 
 
 async def repeat_search(search_prompt: str, profile_id: str) -> list[dict]:

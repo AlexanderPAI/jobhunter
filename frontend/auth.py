@@ -14,6 +14,7 @@ def logout() -> None:
         "api_response",
         "vacancies",
         "selected_profile_id",
+        "selected_analysis_id",
     ):
         st.session_state.pop(key, None)
 

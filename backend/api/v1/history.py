@@ -6,7 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.db.connector import get_session
-from backend.db.models import CandidateProfile, SearchResult, SearchRun, User
+from backend.db.models import (
+    CandidateProfile,
+    ResumeRecommendation,
+    SearchResult,
+    SearchRun,
+    User,
+    VacancyAnalysis,
+)
 from backend.security import get_current_user
 
 router = APIRouter(prefix="/v1/history", tags=["history"])
@@ -51,6 +58,11 @@ def _search_data(search: SearchRun) -> dict:
         "filtered_at",
     )
     return {field: getattr(search, field) for field in fields}
+
+
+def _recommendation_data(recommendation: ResumeRecommendation) -> dict:
+    fields = ("id", "skill", "content", "created_at")
+    return {field: getattr(recommendation, field) for field in fields}
 
 
 @router.get("/profiles")
@@ -106,9 +118,23 @@ async def profile_detail(
         if profile.searches
         else None
     )
+    latest_recommendation = await session.scalar(
+        select(ResumeRecommendation)
+        .where(ResumeRecommendation.profile_id == profile.id)
+        .order_by(
+            ResumeRecommendation.created_at.desc(),
+            ResumeRecommendation.id.desc(),
+        )
+        .limit(1)
+    )
     return {
         "profile": _profile_data(profile),
         "latest_search": _search_data(latest) if latest else None,
+        "latest_recommendation": (
+            _recommendation_data(latest_recommendation)
+            if latest_recommendation
+            else None
+        ),
     }
 
 
@@ -128,6 +154,7 @@ async def search_vacancies(
         raise HTTPException(status_code=404, detail="Search not found")
     return [
         {
+            "vacancy_id": result.vacancy.id,
             "title": result.vacancy.title,
             "company": result.vacancy.company,
             "salary": result.vacancy.salary_text,
@@ -141,3 +168,63 @@ async def search_vacancies(
         for result in search.results
         if not relevant_only or result.is_relevant is True
     ]
+
+
+@router.get("/vacancy-analyses")
+async def vacancy_analyses(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.scalars(
+            select(VacancyAnalysis)
+            .where(VacancyAnalysis.user_id == user.id)
+            .order_by(
+                VacancyAnalysis.created_at.desc(),
+                VacancyAnalysis.id.desc(),
+            )
+        )
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "profile_id": row.profile_id,
+            "vacancy_id": row.vacancy_id,
+            "vacancy_title": row.vacancy_snapshot.get("title") or "—",
+            "company": row.vacancy_snapshot.get("company") or "—",
+            "source": row.vacancy_snapshot.get("source") or "—",
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+@router.get("/vacancy-analyses/{analysis_id}")
+async def vacancy_analysis_detail(
+    analysis_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    analysis = await session.scalar(
+        select(VacancyAnalysis).where(
+            VacancyAnalysis.id == analysis_id,
+            VacancyAnalysis.user_id == user.id,
+        )
+    )
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    profile = await session.scalar(
+        select(CandidateProfile).where(
+            CandidateProfile.id == analysis.profile_id,
+            CandidateProfile.user_id == user.id,
+        )
+    )
+    return {
+        "id": analysis.id,
+        "profile_id": analysis.profile_id,
+        "profile_name": profile.name if profile else "—",
+        "vacancy_id": analysis.vacancy_id,
+        "vacancy": analysis.vacancy_snapshot,
+        "result": analysis.result,
+        "created_at": analysis.created_at,
+    }

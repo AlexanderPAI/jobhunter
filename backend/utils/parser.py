@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 from playwright.async_api import async_playwright
@@ -151,6 +151,13 @@ class SearchFilters:
 
 class HHParser:
 
+    REQUEST_TIMEOUT_SECONDS = 60
+    REQUEST_HEADERS = {
+        "Accept": "application/json,text/html,application/xhtml+xml",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "User-Agent": "JobHunter/0.2 (single vacancy parser)",
+    }
+
     def __init__(
         self,
         search_queries: list[str],
@@ -206,6 +213,166 @@ class HHParser:
     @staticmethod
     def _clean(text: str) -> str:
         return re.sub(r"\s+", " ", text or "").strip()
+
+    @staticmethod
+    def _clean_html(value: object) -> str:
+        if value is None:
+            return ""
+        text = html_lib.unescape(str(value))
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<li[^>]*>", "\n• ", text, flags=re.IGNORECASE)
+        text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(?:p|div|h[1-6])>", "\n\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _vacancy_id_from_url(
+        url: str,
+        *,
+        allowed_hosts: set[str],
+        path_pattern: str,
+        allow_subdomains: bool = False,
+    ) -> str:
+        parsed = urlparse(url.strip())
+        host = (parsed.hostname or "").lower()
+        host_allowed = host in allowed_hosts or (
+            allow_subdomains
+            and any(host.endswith(f".{allowed}") for allowed in allowed_hosts)
+        )
+        if parsed.scheme not in {"http", "https"} or not host_allowed:
+            expected_host = sorted(allowed_hosts)[0]
+            raise ValueError(f"Ожидается ссылка на вакансию с домена {expected_host}")
+
+        match = re.fullmatch(path_pattern, parsed.path.rstrip("/"))
+        if match is None:
+            raise ValueError("Не удалось определить идентификатор вакансии")
+        return match.group(1)
+
+    @staticmethod
+    def _format_detail_salary(salary: dict | None) -> str:
+        if not salary:
+            return "не указана"
+
+        salary_from = salary.get("from")
+        salary_to = salary.get("to")
+        currency = salary.get("currency") or ""
+        if salary_from is not None and salary_to is not None:
+            amount = f"{salary_from:,}–{salary_to:,}"
+        elif salary_from is not None:
+            amount = f"от {salary_from:,}"
+        elif salary_to is not None:
+            amount = f"до {salary_to:,}"
+        else:
+            return "не указана"
+
+        tax = "до вычета налогов" if salary.get("gross") else "на руки"
+        return f"{amount.replace(',', ' ')} {currency} ({tax})".strip()
+
+    async def parse_vacancy(self, url: str) -> dict:
+        """Парсит одну вакансию hh.ru через браузер Playwright."""
+        vacancy_id = self._vacancy_id_from_url(
+            url,
+            allowed_hosts={"hh.ru"},
+            path_pattern=r"/vacancy/(\d+)",
+            allow_subdomains=True,
+        )
+        canonical_url = f"https://hh.ru/vacancy/{vacancy_id}"
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                locale="ru-RU",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await context.new_page()
+            try:
+                await self._goto_with_retry(page, canonical_url)
+                await page.wait_for_selector(
+                    '[data-qa="vacancy-description"]',
+                    timeout=self.GOTO_TIMEOUT_MS,
+                )
+                return await self._parse_vacancy_page(
+                    page,
+                    canonical_url,
+                    vacancy_id,
+                )
+            finally:
+                await context.close()
+                await browser.close()
+
+    async def _parse_vacancy_page(
+        self,
+        page,
+        canonical_url: str,
+        vacancy_id: str,
+    ) -> dict:
+        async def first_text(*selectors: str, default: str = "—") -> str:
+            for selector in selectors:
+                locator = page.locator(selector)
+                if await locator.count():
+                    value = self._clean(await locator.first.inner_text())
+                    if value:
+                        return value
+            return default
+
+        title = await first_text('[data-qa="vacancy-title"]')
+        if title == "—":
+            raise ValueError("На странице HH не найдено название вакансии")
+
+        skill_locator = page.locator('[data-qa="skills-element"]')
+        skills = [
+            self._clean(value)
+            for value in await skill_locator.all_inner_texts()
+            if self._clean(value)
+        ]
+        description_locator = page.locator('[data-qa="vacancy-description"]')
+        description = (
+            self._clean_html(await description_locator.first.inner_html())
+            if await description_locator.count()
+            else ""
+        )
+        published_locator = page.locator('[data-qa="vacancy-creation-time"] time, time')
+        published_at = (
+            await published_locator.first.get_attribute("datetime")
+            if await published_locator.count()
+            else None
+        )
+
+        return {
+            "source": "hh",
+            "external_id": vacancy_id,
+            "title": title,
+            "company": await first_text(
+                '[data-qa="vacancy-company-name"]',
+                '[data-qa="vacancy-company-name"] a',
+            ),
+            "salary": await first_text(
+                '[data-qa="vacancy-salary"]',
+                '[data-qa="vacancy-compensation"]',
+                default="не указана",
+            ),
+            "city": await first_text(
+                '[data-qa="vacancy-view-raw-address"]',
+                '[data-qa="vacancy-view-location"]',
+            ),
+            "schedule": await first_text(
+                '[data-qa="work-schedule-by-days-text"]',
+                '[data-qa="vacancy-view-employment-mode"]',
+            ),
+            "employment": await first_text('[data-qa="vacancy-view-employment-mode"]'),
+            "experience": await first_text('[data-qa="vacancy-experience"]'),
+            "skills": skills,
+            "description": description,
+            "published_at": published_at,
+            "link": canonical_url,
+        }
 
     @staticmethod
     def _salary_from_card(card) -> str:
@@ -293,6 +460,7 @@ class HHParser:
 
                 page_results.append(
                     {
+                        "source": "hh",
                         "title": title,
                         "company": company,
                         "salary": salary,
@@ -691,6 +859,7 @@ class CareerHabrParser(HHParser):
         link = f"https://career.habr.com{href}" if href.startswith("/") else href
 
         return {
+            "source": "habr",
             "title": vacancy.get("title") or "—",
             "company": company.get("title") or "—",
             "salary": self._format_habr_salary(vacancy),
@@ -698,6 +867,139 @@ class CareerHabrParser(HHParser):
             "schedule": self._format_habr_schedule(vacancy),
             "experience": self._format_habr_experience(vacancy),
             "link": link or "—",
+        }
+
+    @staticmethod
+    def _extract_json_ld(page_html: str) -> list[dict]:
+        blocks: list[dict] = []
+        pattern = re.compile(
+            r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>" r"(.*?)</script>",
+            re.IGNORECASE | re.DOTALL,
+        )
+        for raw_block in pattern.findall(page_html):
+            try:
+                parsed = json.loads(raw_block)
+            except json.JSONDecodeError:
+                try:
+                    parsed = json.loads(html_lib.unescape(raw_block))
+                except json.JSONDecodeError:
+                    continue
+            candidates = parsed if isinstance(parsed, list) else [parsed]
+            blocks.extend(item for item in candidates if isinstance(item, dict))
+        return blocks
+
+    @classmethod
+    def _extract_job_posting(cls, page_html: str) -> dict:
+        for block in cls._extract_json_ld(page_html):
+            graph = block.get("@graph")
+            candidates = graph if isinstance(graph, list) else [block]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                types = candidate.get("@type")
+                type_names = types if isinstance(types, list) else [types]
+                if "JobPosting" in type_names:
+                    return candidate
+        raise ValueError("На странице Хабр Карьеры не найдены данные вакансии")
+
+    @staticmethod
+    def _format_detail_habr_salary(value: object) -> str:
+        if not isinstance(value, dict):
+            return "не указана"
+        amount = value.get("value")
+        currency = value.get("currency") or ""
+        if isinstance(amount, dict):
+            minimum = amount.get("minValue")
+            maximum = amount.get("maxValue")
+            if minimum is not None and maximum is not None:
+                text = f"{minimum}–{maximum}"
+            elif minimum is not None:
+                text = f"от {minimum}"
+            elif maximum is not None:
+                text = f"до {maximum}"
+            else:
+                text = amount.get("value")
+        else:
+            text = amount
+        if text in (None, ""):
+            return "не указана"
+        return f"{text} {currency}".strip()
+
+    @staticmethod
+    def _format_detail_habr_location(value: object) -> str:
+        locations = value if isinstance(value, list) else [value]
+        names: list[str] = []
+        for location in locations:
+            if not isinstance(location, dict):
+                continue
+            address = location.get("address") or {}
+            if not isinstance(address, dict):
+                continue
+            name = (
+                address.get("addressLocality")
+                or address.get("streetAddress")
+                or address.get("addressRegion")
+            )
+            if name and name not in names:
+                names.append(str(name))
+        return ", ".join(names) or "—"
+
+    @classmethod
+    def _format_detail_habr_skills(cls, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [cls._clean_html(item) for item in value if cls._clean_html(item)]
+        if isinstance(value, str):
+            return [
+                item.strip()
+                for item in re.split(r"[,;]", cls._clean_html(value))
+                if item.strip()
+            ]
+        return []
+
+    async def parse_vacancy(self, url: str) -> dict:
+        """Парсит одну вакансию career.habr.com через браузер Playwright."""
+        vacancy_id = self._vacancy_id_from_url(
+            url,
+            allowed_hosts={"career.habr.com"},
+            path_pattern=r"/vacancies/(\d+)",
+        )
+        canonical_url = f"https://career.habr.com/vacancies/{vacancy_id}"
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                locale="ru-RU",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await context.new_page()
+            try:
+                await self._goto_with_retry(page, canonical_url)
+                await page.wait_for_load_state("domcontentloaded")
+                page_html = await page.content()
+            finally:
+                await context.close()
+                await browser.close()
+
+        data = self._extract_job_posting(page_html)
+        organization = data.get("hiringOrganization") or {}
+        company = organization.get("name") if isinstance(organization, dict) else None
+        return {
+            "source": "habr",
+            "external_id": vacancy_id,
+            "title": data.get("title") or data.get("name") or "—",
+            "company": company or "—",
+            "salary": self._format_detail_habr_salary(data.get("baseSalary")),
+            "city": self._format_detail_habr_location(data.get("jobLocation")),
+            "schedule": self._clean_html(data.get("jobLocationType")) or "—",
+            "employment": self._clean_html(data.get("employmentType")) or "—",
+            "experience": (self._clean_html(data.get("experienceRequirements")) or "—"),
+            "skills": self._format_detail_habr_skills(data.get("skills")),
+            "description": self._clean_html(data.get("description")),
+            "published_at": data.get("datePosted"),
+            "link": data.get("url") or canonical_url,
         }
 
     @staticmethod
