@@ -220,7 +220,9 @@ class HHParser:
             return ""
         text = html_lib.unescape(str(value))
         text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-        text = re.sub(r"</(?:p|li|div|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<li[^>]*>", "\n• ", text, flags=re.IGNORECASE)
+        text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(?:p|div|h[1-6])>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<[^>]+>", "", text)
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\n\s*\n+", "\n\n", text)

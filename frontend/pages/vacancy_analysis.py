@@ -19,6 +19,32 @@ st.set_page_config(
 require_auth()
 inject_theme()
 
+
+def render_vacancy_description(value: str | None) -> str:
+    lines = [line.strip() for line in (value or "").splitlines()]
+    blocks: list[str] = []
+    list_items: list[str] = []
+
+    def flush_list() -> None:
+        if list_items:
+            items = "".join(f"<li>{item}</li>" for item in list_items)
+            blocks.append(f"<ul>{items}</ul>")
+            list_items.clear()
+
+    for line in lines:
+        if not line:
+            flush_list()
+            continue
+        escaped = html.escape(line.lstrip("•-–—").strip())
+        if line.startswith(("•", "-", "–", "—")):
+            list_items.append(escaped)
+        else:
+            flush_list()
+            blocks.append(f"<p>{escaped}</p>")
+    flush_list()
+    return '<div class="vacancy-description-readable">' + "".join(blocks) + "</div>"
+
+
 with st.sidebar:
     render_brand()
     render_account_sidebar()
@@ -109,4 +135,9 @@ with right:
         )
 
 with st.expander("Полное описание вакансии"):
-    st.markdown(vacancy.get("description") or "Описание недоступно.")
+    st.markdown(
+        render_vacancy_description(
+            vacancy.get("description") or "Описание недоступно."
+        ),
+        unsafe_allow_html=True,
+    )
