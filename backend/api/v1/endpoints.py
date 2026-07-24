@@ -1,8 +1,11 @@
 import shutil
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
+import aiohttp
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from playwright.async_api import Error as PlaywrightError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,12 +17,18 @@ from backend.api.v1.schemes import (
     ResumeRecommendationsRequest,
     SearcherRequest,
     VacancyCheckerRequest,
+    VacancyMatchRequest,
 )
 from backend.db.connector import get_session
-from backend.db.models import CandidateProfile, User
-from backend.db.repositories import create_profile, save_resume_recommendation
+from backend.db.models import CandidateProfile, SearchResult, SearchRun, User, Vacancy
+from backend.db.repositories import (
+    create_profile,
+    save_resume_recommendation,
+    save_vacancy_analysis,
+)
 from backend.llm_providers.base import LLMProviderError
 from backend.security import get_current_user
+from backend.utils.parser import CareerHabrParser, HHParser
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(get_current_user)])
 
@@ -38,6 +47,8 @@ cv_analyzer_agent = CVAnalyzerAgent()
 resume_advisor_agent = ResumeAdvisorAgent()
 search_agent = SearchAgent()
 vacancy_filter_agent = VacancyFilterAgent()
+hh_parser = HHParser([], area=1, max_pages=1)
+habr_parser = CareerHabrParser([], area=1, max_pages=1)
 
 
 @router.post("/upload_cv")
@@ -130,6 +141,76 @@ async def resume_recommendations(
         "recommendations": recommendations,
         "recommendation_id": str(saved_recommendation.id),
         "created_at": saved_recommendation.created_at,
+    }
+
+
+@router.post("/vacancy_match/analyze")
+async def analyze_vacancy_match(
+    request: VacancyMatchRequest,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    profile = await session.scalar(
+        select(CandidateProfile).where(
+            CandidateProfile.id == request.profile_id,
+            CandidateProfile.user_id == user.id,
+        )
+    )
+    vacancy = await session.scalar(
+        select(Vacancy)
+        .join(SearchResult, SearchResult.vacancy_id == Vacancy.id)
+        .join(SearchRun, SearchRun.id == SearchResult.search_run_id)
+        .where(
+            Vacancy.id == request.vacancy_id,
+            SearchRun.user_id == user.id,
+            SearchRun.profile_id == request.profile_id,
+        )
+        .limit(1)
+    )
+    if profile is None or vacancy is None:
+        raise HTTPException(status_code=404, detail="Profile or vacancy not found")
+
+    profile_id = profile.id
+    vacancy_id = vacancy.id
+    vacancy_url = vacancy.external_url
+    vacancy_host = (urlparse(vacancy_url).hostname or "").lower()
+    try:
+        if vacancy_host == "career.habr.com":
+            vacancy_data = await habr_parser.parse_vacancy(vacancy_url)
+        elif vacancy_host == "hh.ru" or vacancy_host.endswith(".hh.ru"):
+            vacancy_data = await hh_parser.parse_vacancy(vacancy_url)
+        elif vacancy.source == "habr":
+            vacancy_data = await habr_parser.parse_vacancy(vacancy_url)
+        elif vacancy.source == "hh":
+            vacancy_data = await hh_parser.parse_vacancy(vacancy_url)
+        else:
+            raise ValueError(f"Неподдерживаемый домен вакансии: {vacancy_host}")
+    except (aiohttp.ClientError, PlaywrightError, TimeoutError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Сайт с вакансией временно недоступен, заблокировал загрузку "
+                "или вакансия уже закрыта. Попробуйте повторить позже."
+            ),
+        ) from exc
+
+    result, _ = await resume_advisor_agent.run(
+        profile.raw_data,
+        profile.cv_text,
+        skill="vacancy_match",
+        vacancy=vacancy_data,
+    )
+    analysis = await save_vacancy_analysis(
+        session,
+        user_id=user.id,
+        profile_id=profile_id,
+        vacancy_id=vacancy_id,
+        result=result,
+        vacancy_snapshot=vacancy_data,
+    )
+    return {
+        "analysis_id": str(analysis.id),
+        "created_at": analysis.created_at,
     }
 
 

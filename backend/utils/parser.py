@@ -232,10 +232,15 @@ class HHParser:
         *,
         allowed_hosts: set[str],
         path_pattern: str,
+        allow_subdomains: bool = False,
     ) -> str:
         parsed = urlparse(url.strip())
         host = (parsed.hostname or "").lower()
-        if parsed.scheme not in {"http", "https"} or host not in allowed_hosts:
+        host_allowed = host in allowed_hosts or (
+            allow_subdomains
+            and any(host.endswith(f".{allowed}") for allowed in allowed_hosts)
+        )
+        if parsed.scheme not in {"http", "https"} or not host_allowed:
             expected_host = sorted(allowed_hosts)[0]
             raise ValueError(f"Ожидается ссылка на вакансию с домена {expected_host}")
 
@@ -265,45 +270,106 @@ class HHParser:
         return f"{amount.replace(',', ' ')} {currency} ({tax})".strip()
 
     async def parse_vacancy(self, url: str) -> dict:
-        """Парсит одну вакансию hh.ru по прямой ссылке."""
+        """Парсит одну вакансию hh.ru через браузер Playwright."""
         vacancy_id = self._vacancy_id_from_url(
             url,
-            allowed_hosts={"hh.ru", "www.hh.ru"},
+            allowed_hosts={"hh.ru"},
             path_pattern=r"/vacancy/(\d+)",
+            allow_subdomains=True,
         )
-        timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(
-            headers=self.REQUEST_HEADERS, timeout=timeout
-        ) as session:
-            async with session.get(
-                f"https://api.hh.ru/vacancies/{vacancy_id}"
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
+        canonical_url = f"https://hh.ru/vacancy/{vacancy_id}"
 
-        if not isinstance(data, dict):
-            raise ValueError("HH вернул данные вакансии в неожиданном формате")
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                locale="ru-RU",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await context.new_page()
+            try:
+                await self._goto_with_retry(page, canonical_url)
+                await page.wait_for_selector(
+                    '[data-qa="vacancy-description"]',
+                    timeout=self.GOTO_TIMEOUT_MS,
+                )
+                return await self._parse_vacancy_page(
+                    page,
+                    canonical_url,
+                    vacancy_id,
+                )
+            finally:
+                await context.close()
+                await browser.close()
 
-        address = data.get("address") or {}
-        area = data.get("area") or {}
+    async def _parse_vacancy_page(
+        self,
+        page,
+        canonical_url: str,
+        vacancy_id: str,
+    ) -> dict:
+        async def first_text(*selectors: str, default: str = "—") -> str:
+            for selector in selectors:
+                locator = page.locator(selector)
+                if await locator.count():
+                    value = self._clean(await locator.first.inner_text())
+                    if value:
+                        return value
+            return default
+
+        title = await first_text('[data-qa="vacancy-title"]')
+        if title == "—":
+            raise ValueError("На странице HH не найдено название вакансии")
+
+        skill_locator = page.locator('[data-qa="skills-element"]')
+        skills = [
+            self._clean(value)
+            for value in await skill_locator.all_inner_texts()
+            if self._clean(value)
+        ]
+        description_locator = page.locator('[data-qa="vacancy-description"]')
+        description = (
+            self._clean_html(await description_locator.first.inner_html())
+            if await description_locator.count()
+            else ""
+        )
+        published_locator = page.locator('[data-qa="vacancy-creation-time"] time, time')
+        published_at = (
+            await published_locator.first.get_attribute("datetime")
+            if await published_locator.count()
+            else None
+        )
+
         return {
             "source": "hh",
-            "external_id": str(data.get("id") or vacancy_id),
-            "title": data.get("name") or "—",
-            "company": (data.get("employer") or {}).get("name") or "—",
-            "salary": self._format_detail_salary(data.get("salary")),
-            "city": address.get("raw") or area.get("name") or "—",
-            "schedule": (data.get("schedule") or {}).get("name") or "—",
-            "employment": (data.get("employment") or {}).get("name") or "—",
-            "experience": (data.get("experience") or {}).get("name") or "—",
-            "skills": [
-                skill["name"]
-                for skill in data.get("key_skills") or []
-                if isinstance(skill, dict) and skill.get("name")
-            ],
-            "description": self._clean_html(data.get("description")),
-            "published_at": data.get("published_at"),
-            "link": data.get("alternate_url") or url,
+            "external_id": vacancy_id,
+            "title": title,
+            "company": await first_text(
+                '[data-qa="vacancy-company-name"]',
+                '[data-qa="vacancy-company-name"] a',
+            ),
+            "salary": await first_text(
+                '[data-qa="vacancy-salary"]',
+                '[data-qa="vacancy-compensation"]',
+                default="не указана",
+            ),
+            "city": await first_text(
+                '[data-qa="vacancy-view-raw-address"]',
+                '[data-qa="vacancy-view-location"]',
+            ),
+            "schedule": await first_text(
+                '[data-qa="work-schedule-by-days-text"]',
+                '[data-qa="vacancy-view-employment-mode"]',
+            ),
+            "employment": await first_text('[data-qa="vacancy-view-employment-mode"]'),
+            "experience": await first_text('[data-qa="vacancy-experience"]'),
+            "skills": skills,
+            "description": description,
+            "published_at": published_at,
+            "link": canonical_url,
         }
 
     @staticmethod
@@ -392,6 +458,7 @@ class HHParser:
 
                 page_results.append(
                     {
+                        "source": "hh",
                         "title": title,
                         "company": company,
                         "salary": salary,
@@ -790,6 +857,7 @@ class CareerHabrParser(HHParser):
         link = f"https://career.habr.com{href}" if href.startswith("/") else href
 
         return {
+            "source": "habr",
             "title": vacancy.get("title") or "—",
             "company": company.get("title") or "—",
             "salary": self._format_habr_salary(vacancy),
@@ -887,18 +955,31 @@ class CareerHabrParser(HHParser):
         return []
 
     async def parse_vacancy(self, url: str) -> dict:
-        """Парсит одну вакансию career.habr.com по прямой ссылке."""
+        """Парсит одну вакансию career.habr.com через браузер Playwright."""
         vacancy_id = self._vacancy_id_from_url(
             url,
             allowed_hosts={"career.habr.com"},
             path_pattern=r"/vacancies/(\d+)",
         )
         canonical_url = f"https://career.habr.com/vacancies/{vacancy_id}"
-        timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(
-            headers=self.REQUEST_HEADERS, timeout=timeout
-        ) as session:
-            page_html = await self._fetch_html(session, canonical_url)
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                locale="ru-RU",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+            )
+            page = await context.new_page()
+            try:
+                await self._goto_with_retry(page, canonical_url)
+                await page.wait_for_load_state("domcontentloaded")
+                page_html = await page.content()
+            finally:
+                await context.close()
+                await browser.close()
 
         data = self._extract_job_posting(page_html)
         organization = data.get("hiringOrganization") or {}

@@ -14,3 +14,8 @@ class VacancyCheckerRequest(BaseModel):
 
 class ResumeRecommendationsRequest(BaseModel):
     profile_id: uuid.UUID = Field(..., description="Идентификатор профиля")
+
+
+class VacancyMatchRequest(BaseModel):
+    profile_id: uuid.UUID = Field(..., description="Идентификатор профиля")
+    vacancy_id: uuid.UUID = Field(..., description="Идентификатор вакансии")

@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from frontend.api import (
+    analyze_vacancy,
     get_profile,
     get_resume_recommendations,
     get_search_vacancies,
@@ -52,6 +53,7 @@ with st.sidebar:
     render_account_sidebar()
     st.page_link("app.py", label="Новый радар")
     st.page_link("pages/profiles.py", label="Карьерные профили")
+    st.page_link("pages/vacancy_analyses.py", label="Анализы вакансий")
 
 
 def format_datetime(value: datetime | None) -> str:
@@ -229,7 +231,55 @@ if latest_search:
         if dataframe.empty:
             st.info("В последнем подборе нет подходящих вакансий.")
         else:
-            st.markdown(render_vacancy_table(dataframe), unsafe_allow_html=True)
+            for index, vacancy in enumerate(vacancies):
+                with st.container(border=True):
+                    details, links, action = st.columns(
+                        [4.2, 1.2, 1.7], vertical_alignment="center"
+                    )
+                    with details:
+                        st.markdown(f"**{vacancy.get('title') or '—'}**")
+                        st.caption(
+                            " · ".join(
+                                str(value)
+                                for value in (
+                                    vacancy.get("company"),
+                                    vacancy.get("salary"),
+                                    vacancy.get("city"),
+                                )
+                                if value and value != "—"
+                            )
+                        )
+                    with links:
+                        st.link_button(
+                            "Вакансия ↗",
+                            vacancy["link"],
+                            use_container_width=True,
+                        )
+                    with action:
+                        if st.button(
+                            "Проверить соответствие",
+                            key=f"match_{vacancy['vacancy_id']}_{index}",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            with st.spinner("Сопоставляем профиль и вакансию…"):
+                                try:
+                                    analysis_id = asyncio.run(
+                                        analyze_vacancy(
+                                            profile_id,
+                                            str(vacancy["vacancy_id"]),
+                                        )
+                                    )
+                                    st.session_state["selected_analysis_id"] = (
+                                        analysis_id
+                                    )
+                                    st.switch_page("pages/vacancy_analysis.py")
+                                except (
+                                    aiohttp.ClientConnectorError,
+                                    TimeoutError,
+                                    RuntimeError,
+                                ) as error:
+                                    st.error(str(error))
             st.download_button(
                 "Скачать CSV",
                 dataframe.to_csv(index=False).encode("utf-8-sig"),

@@ -28,6 +28,7 @@ logger = logging.getLogger("RESUME_ADVISOR")
 PROMPTS_PATH = Path(__file__).parent / "prompts/base.yaml"
 SKILL_PROMPTS = {
     "base": load_prompt(PROMPTS_PATH, "base_recommendations_system"),
+    "vacancy_match": load_prompt(PROMPTS_PATH, "vacancy_match_system"),
 }
 
 
@@ -35,6 +36,7 @@ class State(TypedDict):
     messages: Annotated[List, add_messages]
     user_profile: dict
     cv_text: str
+    vacancy: dict
     skill: str
     final_answer: str
 
@@ -54,13 +56,17 @@ class ResumeAdvisorAgent:
         cv_text = state["cv_text"].strip() or (
             "Исходный текст резюме недоступен. Анализируй только профиль."
         )
+        vacancy_json = json.dumps(
+            state.get("vacancy") or {}, ensure_ascii=False, indent=2
+        )
         prompt = [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
                     f"Структурированный профиль:\n{profile_json}\n\n"
-                    f"Исходный текст резюме:\n{cv_text}"
+                    f"Исходный текст резюме:\n{cv_text}\n\n"
+                    f"Данные вакансии:\n{vacancy_json}"
                 ),
             },
         ]
@@ -90,11 +96,13 @@ class ResumeAdvisorAgent:
         cv_text: str | None = None,
         *,
         skill: str = "base",
+        vacancy: dict | None = None,
     ) -> tuple[str, State]:
         initial_state: State = {
             "messages": [],
             "user_profile": user_profile,
             "cv_text": cv_text or "",
+            "vacancy": vacancy or {},
             "skill": skill,
             "final_answer": "",
         }
