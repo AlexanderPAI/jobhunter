@@ -52,11 +52,17 @@ async def get_profiles() -> list[dict]:
     return [_dates(item) for item in (await _get("/v1/history/profiles") or [])]
 
 
-async def get_profile(profile_id: str) -> tuple[dict | None, dict | None]:
+async def get_profile(
+    profile_id: str,
+) -> tuple[dict | None, dict | None, dict | None]:
     data = await _get(f"/v1/history/profiles/{profile_id}")
     if data is None:
-        return None, None
-    return _dates(data["profile"]), _dates(data["latest_search"])
+        return None, None, None
+    return (
+        _dates(data["profile"]),
+        _dates(data["latest_search"]),
+        _dates(data["latest_recommendation"]),
+    )
 
 
 async def get_search_vacancies(search_id: str, *, relevant_only: bool) -> list[dict]:

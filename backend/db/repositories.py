@@ -7,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.db.models import CandidateProfile, SearchResult, SearchRun, Vacancy
+from backend.db.models import (
+    CandidateProfile,
+    ResumeRecommendation,
+    SearchResult,
+    SearchRun,
+    Vacancy,
+)
 
 
 def _string_list(value: Any) -> list[str]:
@@ -80,6 +86,24 @@ async def create_profile(
     await session.commit()
     await session.refresh(profile)
     return profile
+
+
+async def save_resume_recommendation(
+    session: AsyncSession,
+    *,
+    profile_id: uuid.UUID,
+    skill: str,
+    content: str,
+) -> ResumeRecommendation:
+    recommendation = ResumeRecommendation(
+        profile_id=uuid.UUID(str(profile_id)),
+        skill=skill,
+        content=content,
+    )
+    session.add(recommendation)
+    await session.commit()
+    await session.refresh(recommendation)
+    return recommendation
 
 
 async def save_search(

@@ -135,7 +135,7 @@ if not profile_id:
     st.stop()
 
 try:
-    profile, latest_search = asyncio.run(get_profile(profile_id))
+    profile, latest_search, latest_recommendation = asyncio.run(get_profile(profile_id))
 except Exception as error:
     st.error(f"Не удалось получить профиль из базы данных: {error}")
     st.stop()
@@ -173,6 +173,9 @@ cards = (
 st.markdown(template("cards_row.html", cards=cards), unsafe_allow_html=True)
 
 recommendations_key = f"resume_recommendations_{profile_id}"
+if latest_recommendation is not None:
+    st.session_state[recommendations_key] = latest_recommendation["content"]
+
 if st.button("Получить рекомендации по резюме", use_container_width=True):
     with st.spinner("Анализируем резюме…"):
         try:

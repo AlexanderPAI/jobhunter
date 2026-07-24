@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.db.connector import get_session
-from backend.db.models import CandidateProfile, SearchResult, SearchRun, User
+from backend.db.models import (
+    CandidateProfile,
+    ResumeRecommendation,
+    SearchResult,
+    SearchRun,
+    User,
+)
 from backend.security import get_current_user
 
 router = APIRouter(prefix="/v1/history", tags=["history"])
@@ -51,6 +57,11 @@ def _search_data(search: SearchRun) -> dict:
         "filtered_at",
     )
     return {field: getattr(search, field) for field in fields}
+
+
+def _recommendation_data(recommendation: ResumeRecommendation) -> dict:
+    fields = ("id", "skill", "content", "created_at")
+    return {field: getattr(recommendation, field) for field in fields}
 
 
 @router.get("/profiles")
@@ -106,9 +117,23 @@ async def profile_detail(
         if profile.searches
         else None
     )
+    latest_recommendation = await session.scalar(
+        select(ResumeRecommendation)
+        .where(ResumeRecommendation.profile_id == profile.id)
+        .order_by(
+            ResumeRecommendation.created_at.desc(),
+            ResumeRecommendation.id.desc(),
+        )
+        .limit(1)
+    )
     return {
         "profile": _profile_data(profile),
         "latest_search": _search_data(latest) if latest else None,
+        "latest_recommendation": (
+            _recommendation_data(latest_recommendation)
+            if latest_recommendation
+            else None
+        ),
     }
 
 

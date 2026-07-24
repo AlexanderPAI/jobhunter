@@ -5,5 +5,6 @@ from backend.db.models.job_search import (  # noqa
     SearchRun,
     Vacancy,
 )
+from backend.db.models.resume_recommendation import ResumeRecommendation  # noqa
 from backend.db.models.test import Test  # noqa
 from backend.db.models.user import User  # noqa

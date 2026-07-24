@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.db.models.base import Base
 
 if TYPE_CHECKING:
+    from backend.db.models.resume_recommendation import ResumeRecommendation
     from backend.db.models.user import User
 
 
@@ -54,6 +55,9 @@ class CandidateProfile(Base):
     )
 
     searches: Mapped[list["SearchRun"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+    resume_recommendations: Mapped[list["ResumeRecommendation"]] = relationship(
         back_populates="profile", cascade="all, delete-orphan"
     )
     owner: Mapped["User"] = relationship(back_populates="profiles")

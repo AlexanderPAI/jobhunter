@@ -17,7 +17,7 @@ from backend.api.v1.schemes import (
 )
 from backend.db.connector import get_session
 from backend.db.models import CandidateProfile, User
-from backend.db.repositories import create_profile
+from backend.db.repositories import create_profile, save_resume_recommendation
 from backend.llm_providers.base import LLMProviderError
 from backend.security import get_current_user
 
@@ -113,14 +113,23 @@ async def resume_recommendations(
     if profile is None:
         raise HTTPException(status_code=404, detail="Profile not found")
 
+    profile_id = profile.id
     recommendations, _ = await resume_advisor_agent.run(
         profile.raw_data,
         profile.cv_text,
         skill="base",
     )
+    saved_recommendation = await save_resume_recommendation(
+        session,
+        profile_id=profile_id,
+        skill="base",
+        content=recommendations,
+    )
     return {
-        "profile_id": str(profile.id),
+        "profile_id": str(profile_id),
         "recommendations": recommendations,
+        "recommendation_id": str(saved_recommendation.id),
+        "created_at": saved_recommendation.created_at,
     }
 
 
